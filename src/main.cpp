@@ -4,7 +4,7 @@
 #include <ESP32Encoder.h>
 #include <esp_system.h>
 
-constexpr uint32_t SERIAL_BAUD = 115200;
+constexpr uint32_t SERIAL_BAUD = 460800;   // room for the 200 Hz log next to the telemetry
 constexpr uint32_t HEARTBEAT_INTERVAL_MS = 500;
 constexpr uint32_t HEALTH_INTERVAL_MS = 1000;
 
@@ -48,12 +48,37 @@ constexpr unsigned LED_TARGET = MOTOR_COUNT + 1;   // RUN target number after th
 constexpr uint32_t PWM_FREQ_HZ = 1000;      // same as Arduino-ESP32's analogWrite() default
 constexpr uint8_t PWM_BITS = 10;
 constexpr uint32_t PWM_MAX = (1 << PWM_BITS) - 1;
-constexpr uint32_t MOTOR_UPDATE_MS = 5;
+constexpr uint32_t CONTROL_PERIOD_US = 5000;  // fixed 200 Hz control tick on core 1
 constexpr uint32_t MOTOR_WATCHDOG_MS = 1000;  // stop if the dashboard goes quiet this long
 constexpr uint32_t MOTOR_REPORT_MS = 40;      // 25 Hz
 constexpr uint32_t SPEED_WINDOW_MS = 50;      // encoder speed = count change over this window
+constexpr size_t LOG_QUEUE_LENGTH = 256;      // 1.28 s of ticks buffered between the cores
 
-constexpr const char* FIRMWARE_VERSION = "0.12.0";
+// Speed control (200 Hz on core 1): feedforward from the measured steady-state curve plus
+// a PI on the speed error, with clamping anti-windup. Volts are duty x SUPPLY_V.
+constexpr float SUPPLY_V = 12.0f;
+constexpr float DEFAULT_CPR = 186.2f;          // measured on motor 1 (counts per output rev)
+constexpr size_t SPEED_TAPS = 4;               // controller speed: backward difference over 20 ms
+constexpr float DEFAULT_KP = 0.0089f;          // V per RPM (SIMC, tau_c = tau = 125 ms)
+constexpr float DEFAULT_KI = 0.071f;           // V per RPM*s
+
+struct FfPoint {
+  float rpm;
+  float duty;   // % that holds this speed in steady state
+};
+// Motor 1 steady-state sweep (12 V, 1 kHz PWM); the 0 RPM point is the stop threshold
+constexpr FfPoint FF_PLUS[] = {
+  {0, 11.6}, {50.3, 12}, {71.6, 13}, {109.9, 15}, {146.2, 17}, {191.1, 20}, {256.6, 25},
+  {320.9, 30}, {440.7, 40}, {558.8, 50}, {675.3, 60}, {892.8, 80}, {1115.1, 100},
+};
+constexpr FfPoint FF_MINUS[] = {
+  {0, 10.0}, {25.3, 11}, {56.9, 12}, {78.4, 13}, {118.1, 15}, {153.5, 17}, {199.4, 20},
+  {268.0, 25}, {331.2, 30}, {453.6, 40}, {574.4, 50}, {689.9, 60}, {905.8, 80}, {1127.0, 100},
+};
+
+enum class RunMode : uint8_t { OpenLoop = 0, Feedforward = 1, FeedforwardPi = 2 };
+
+constexpr const char* FIRMWARE_VERSION = "0.14.0";
 
 // Protocol (one message per line):
 //   ESP32 -> PC : HB,<uptime_ms>               heartbeat
@@ -70,6 +95,11 @@ constexpr const char* FIRMWARE_VERSION = "0.12.0";
 //                 ENC,<count1>,<cps1>,<count2>,<cps2>
 //                 (encoder counts and counts per second; the sign follows the + direction
 //                  once ENCINV has been set to match)
+//                 SPD,<mode>,<target_rpm>,<speed_rpm>,<ff_duty>,<pi_duty>
+//                 (speed control of the running motor; mode 0 open loop, 1 FF, 2 FF + PI)
+//                 L,<t_us>,<duty>,<count1>,<count2>,<target_rpm>,<speed_rpm>
+//                 (one line per 200 Hz control tick while logging is on; t_us is micros()
+//                  at the tick, duty the one applied in that tick, speed the controller's)
 //   PC -> ESP32 : HELLO?                       request HELLO and INFO
 //                 PING                         dashboard is alive (keeps the motor allowed to run)
 //                 RUN,<target>,<duty>,<duration_ms>
@@ -79,6 +109,10 @@ constexpr const char* FIRMWARE_VERSION = "0.12.0";
 //                 STOP                         stop the motor
 //                 ENCZERO,<motor>              zero that motor's encoder count
 //                 ENCINV,<motor>,<0|1>         flip that encoder's sign
+//                 LOG,<0|1>                    stream the 200 Hz control ticks
+//                 SPEED,<motor>,<rpm>,<mode>   closed/open speed control: mode 1 FF, 2 FF + PI
+//                 GAIN,<kp>,<ki>               PI gains in V/RPM and V/(RPM*s)
+//                 CPR,<motor>,<counts>         counts per output revolution for RPM
 
 struct LoopStats {
   uint32_t lastStartUs = 0;
@@ -97,7 +131,9 @@ enum class RunState : uint8_t { Idle = 0, Running = 1, Watchdog = 2, Done = 3 };
 
 struct MotorRun {
   int motor = 0;              // index into MOTOR_PINS, or MOTOR_COUNT for the LED
-  float duty = 0;             // -100..100 %
+  RunMode mode = RunMode::OpenLoop;
+  float duty = 0;             // -100..100 %, open loop
+  float targetRpm = 0;        // speed modes
   uint32_t durationMs = 0;    // 0 = until STOP
   uint32_t startMs = 0;
 };
@@ -108,6 +144,16 @@ MotorRun motorRun;
 RunState runState = RunState::Idle;
 uint32_t lastPingMs = 0;
 float outputDuty = 0;   // duty currently driven, signed
+float gainKp = DEFAULT_KP;
+float gainKi = DEFAULT_KI;
+float motorCpr[MOTOR_COUNT] = {DEFAULT_CPR, DEFAULT_CPR};
+
+struct ControlStatus {
+  float speedRpm = 0;   // controller's speed estimate
+  float ffDuty = 0;
+  float piDuty = 0;
+};
+ControlStatus controlStatus;   // for the running motor
 
 struct EncoderStatus {
   int64_t count = 0;
@@ -119,6 +165,17 @@ EncoderStatus encoderStatus[MOTOR_COUNT];
 bool encoderInvert[MOTOR_COUNT] = {};
 bool encoderZero[MOTOR_COUNT] = {};   // set by ENCZERO, consumed by loop()
 ESP32Encoder encoders[MOTOR_COUNT];
+
+// One entry per control tick, produced on core 1 and printed by the telemetry task
+struct LogEntry {
+  uint32_t tUs;
+  float duty;
+  int32_t count[MOTOR_COUNT];
+  float targetRpm;
+  float speedRpm;
+};
+QueueHandle_t logQueue = nullptr;
+volatile bool logEnabled = false;
 
 struct PowerWindow {
   float sumVoltage = 0;
@@ -192,6 +249,8 @@ void handleCommand(const String& cmd) {
     portENTER_CRITICAL(&runMux);
     runState = RunState::Idle;
     portEXIT_CRITICAL(&runMux);
+  } else if (cmd.startsWith("LOG,")) {
+    logEnabled = cmd.endsWith("1");
   } else if (cmd.startsWith("ENCZERO,")) {
     unsigned motor;
     if (sscanf(cmd.c_str(), "ENCZERO,%u", &motor) == 1 && motor >= 1 && motor <= MOTOR_COUNT) {
@@ -206,6 +265,38 @@ void handleCommand(const String& cmd) {
       encoderInvert[motor - 1] = invert != 0;
       portEXIT_CRITICAL(&runMux);
     }
+  } else if (cmd.startsWith("SPEED,")) {
+    unsigned motor, mode;
+    float rpm;
+    if (sscanf(cmd.c_str(), "SPEED,%u,%f,%u", &motor, &rpm, &mode) == 3 &&
+        motor >= 1 && motor <= MOTOR_COUNT && mode >= 1 && mode <= 2) {
+      portENTER_CRITICAL(&runMux);
+      motorRun.motor = motor - 1;
+      motorRun.mode = (RunMode)mode;
+      motorRun.targetRpm = rpm;
+      motorRun.duty = 0;
+      motorRun.durationMs = 0;
+      motorRun.startMs = millis();
+      lastPingMs = millis();
+      runState = RunState::Running;
+      portEXIT_CRITICAL(&runMux);
+    }
+  } else if (cmd.startsWith("GAIN,")) {
+    float kp, ki;
+    if (sscanf(cmd.c_str(), "GAIN,%f,%f", &kp, &ki) == 2 && kp >= 0 && ki >= 0) {
+      portENTER_CRITICAL(&runMux);
+      gainKp = kp;
+      gainKi = ki;
+      portEXIT_CRITICAL(&runMux);
+    }
+  } else if (cmd.startsWith("CPR,")) {
+    unsigned motor;
+    float cpr;
+    if (sscanf(cmd.c_str(), "CPR,%u,%f", &motor, &cpr) == 2 && motor >= 1 && motor <= MOTOR_COUNT && cpr > 0) {
+      portENTER_CRITICAL(&runMux);
+      motorCpr[motor - 1] = cpr;
+      portEXIT_CRITICAL(&runMux);
+    }
   } else if (cmd.startsWith("RUN,")) {
     unsigned motor;
     float duty;
@@ -214,6 +305,8 @@ void handleCommand(const String& cmd) {
         motor >= 1 && motor <= LED_TARGET) {
       portENTER_CRITICAL(&runMux);
       motorRun.motor = motor - 1;
+      motorRun.mode = RunMode::OpenLoop;
+      motorRun.targetRpm = 0;
       motorRun.duty = constrain(duty, -100.0f, 100.0f);
       motorRun.durationMs = duration;
       motorRun.startMs = millis();
@@ -382,6 +475,20 @@ void sendMotorRun() {
   portEXIT_CRITICAL(&runMux);
   Serial.printf("ENC,%lld,%.0f,%lld,%.0f\n", enc[0].count, enc[0].countsPerSec,
                 enc[1].count, enc[1].countsPerSec);
+
+  portENTER_CRITICAL(&runMux);
+  ControlStatus ctl = controlStatus;
+  portEXIT_CRITICAL(&runMux);
+  Serial.printf("SPD,%u,%.1f,%.1f,%.1f,%.1f\n", (unsigned)run.mode, run.targetRpm, ctl.speedRpm,
+                ctl.ffDuty, ctl.piDuty);
+}
+
+void sendLog() {
+  LogEntry e;
+  while (xQueueReceive(logQueue, &e, 0) == pdTRUE) {
+    Serial.printf("L,%lu,%.1f,%ld,%ld,%.1f,%.1f\n", (unsigned long)e.tUs, e.duty,
+                  (long)e.count[0], (long)e.count[1], e.targetRpm, e.speedRpm);
+  }
 }
 
 // Runs on core 0 and owns the serial port and I2C bus, so this I/O never slows loop() down
@@ -397,6 +504,7 @@ void telemetryTask(void*) {
     samplePower();
     sendPower();
     sendMotorRun();
+    sendLog();
     vTaskDelay(pdMS_TO_TICKS(TELEMETRY_PERIOD_MS));
   }
 }
@@ -431,13 +539,75 @@ void applyDuty(size_t motor, float duty, bool enabled) {
   digitalWrite(p.ena, enabled ? HIGH : LOW);
 }
 
-void readEncoders(uint32_t now);
+// Duty (%) that holds `rpm` in steady state, by linear interpolation in the measured
+// curve for that direction; 0 RPM gives 0 (stopped), beyond the last point 100 %
+template <size_t N>
+float interpolateFf(const FfPoint (&table)[N], float rpm) {
+  if (rpm >= table[N - 1].rpm) return table[N - 1].duty;
+  for (size_t i = 1; i < N; i++) {
+    if (rpm <= table[i].rpm) {
+      float f = (rpm - table[i - 1].rpm) / (table[i].rpm - table[i - 1].rpm);
+      return table[i - 1].duty + f * (table[i].duty - table[i - 1].duty);
+    }
+  }
+  return table[N - 1].duty;
+}
+
+float feedforwardDuty(float rpm) {
+  if (rpm > 0) return interpolateFf(FF_PLUS, rpm);
+  if (rpm < 0) return -interpolateFf(FF_MINUS, -rpm);
+  return 0;
+}
+
+struct PiState {
+  float integralV = 0;
+  float lastTargetRpm = 0;
+  RunMode lastMode = RunMode::OpenLoop;
+  int lastMotor = -1;
+};
+
+// Speed modes: returns the duty (%) and fills the FF / PI split for reporting
+float speedControl(PiState& pi, const MotorRun& run, float speedRpm, float kp, float ki,
+                   float& ffDuty, float& piDuty) {
+  bool fresh = run.motor != pi.lastMotor || run.mode != pi.lastMode ||
+               (run.targetRpm > 0) != (pi.lastTargetRpm > 0) || run.targetRpm == 0;
+  if (fresh) pi.integralV = 0;   // new motor, mode or direction: start the integral clean
+  pi.lastMotor = run.motor;
+  pi.lastMode = run.mode;
+  pi.lastTargetRpm = run.targetRpm;
+
+  ffDuty = feedforwardDuty(run.targetRpm);
+  piDuty = 0;
+  if (run.targetRpm == 0) return 0;
+  float ffV = ffDuty / 100.0f * SUPPLY_V;
+  if (run.mode != RunMode::FeedforwardPi) return ffDuty;
+
+  float error = run.targetRpm - speedRpm;
+  float pV = kp * error;
+  float candidate = pi.integralV + ki * error * (CONTROL_PERIOD_US / 1e6f);
+  float uCandidate = ffV + pV + candidate;
+  // Clamping: integrate unless the output is saturated and the error pushes it further
+  bool saturated = fabsf(uCandidate) > SUPPLY_V;
+  if (!saturated || (uCandidate > 0) != (error > 0)) pi.integralV = candidate;
+  float u = constrain(ffV + pV + pi.integralV, -SUPPLY_V, SUPPLY_V);
+  piDuty = (u - ffV) / SUPPLY_V * 100.0f;
+  return u / SUPPLY_V * 100.0f;
+}
+
+void readEncoders(uint32_t now, float (&speedRpm)[MOTOR_COUNT]);
 
 void runMotors() {
-  static uint32_t lastUpdate = 0;
+  // Fixed-period schedule: the next tick is due one period after the previous one was,
+  // not after it actually ran, so the rate does not drift
+  static uint32_t nextTickUs = 0;
+  static PiState pi;
+  uint32_t tickUs = micros();
+  if (nextTickUs != 0 && (int32_t)(tickUs - nextTickUs) < 0) return;
+  if (nextTickUs == 0 || (int32_t)(tickUs - nextTickUs) > (int32_t)CONTROL_PERIOD_US) {
+    nextTickUs = tickUs;   // first tick, or fell more than a period behind: resync
+  }
+  nextTickUs += CONTROL_PERIOD_US;
   uint32_t now = millis();
-  if (now - lastUpdate < MOTOR_UPDATE_MS) return;
-  lastUpdate = now;
 
   portENTER_CRITICAL(&runMux);
   if (runState == RunState::Running && now - lastPingMs > MOTOR_WATCHDOG_MS) {
@@ -449,55 +619,94 @@ void runMotors() {
   }
   MotorRun run = motorRun;
   bool running = runState == RunState::Running;
+  float kp = gainKp;
+  float ki = gainKi;
   portEXIT_CRITICAL(&runMux);
 
+  // Measure first, then decide this tick's duty
+  float speedRpm[MOTOR_COUNT];
+  readEncoders(now, speedRpm);
+
+  float duty = 0, ffDuty = 0, piDuty = 0;
+  bool motorActive = running && run.motor < (int)MOTOR_COUNT;
+  if (motorActive) {
+    duty = run.mode == RunMode::OpenLoop
+        ? run.duty
+        : speedControl(pi, run, speedRpm[run.motor], kp, ki, ffDuty, piDuty);
+  } else {
+    pi = PiState();
+  }
   for (size_t i = 0; i < MOTOR_COUNT; i++) {
-    bool active = running && i == (size_t)run.motor;
-    applyDuty(i, active ? run.duty : 0, active);
+    bool active = motorActive && i == (size_t)run.motor;
+    applyDuty(i, active ? duty : 0, active);
   }
   bool ledActive = running && run.motor == (int)MOTOR_COUNT;
   float ledDuty = ledActive ? fabsf(run.duty) : 0;   // the LED has no direction
   ledcWrite(LED_PIN, (uint32_t)(ledDuty / 100.0f * PWM_MAX + 0.5f));
 
+  float shownSpeed = run.motor < (int)MOTOR_COUNT ? speedRpm[run.motor] : 0;
   portENTER_CRITICAL(&runMux);
-  outputDuty = !running ? 0 : ledActive ? ledDuty : run.duty;
+  outputDuty = !running ? 0 : ledActive ? ledDuty : duty;
+  controlStatus = {shownSpeed, ffDuty, piDuty};
   portEXIT_CRITICAL(&runMux);
 
-  readEncoders(now);
+  if (logEnabled) {
+    LogEntry e;
+    e.tUs = tickUs;
+    portENTER_CRITICAL(&runMux);
+    e.duty = outputDuty;
+    for (size_t i = 0; i < MOTOR_COUNT; i++) e.count[i] = (int32_t)encoderStatus[i].count;
+    portEXIT_CRITICAL(&runMux);
+    e.targetRpm = run.mode == RunMode::OpenLoop ? 0 : run.targetRpm;
+    e.speedRpm = shownSpeed;
+    xQueueSend(logQueue, &e, 0);   // never block the control loop; drop if the queue is full
+  }
 }
 
-// Counts every update, speed from the count change over SPEED_WINDOW_MS
-void readEncoders(uint32_t now) {
+// Counts every tick. Two speeds: the controller's (backward difference over SPEED_TAPS
+// ticks, in RPM) and the reported one (count change over SPEED_WINDOW_MS)
+void readEncoders(uint32_t now, float (&speedRpm)[MOTOR_COUNT]) {
   static uint32_t lastSpeedMs = 0;
   static int64_t lastCount[MOTOR_COUNT] = {};
   static float countsPerSec[MOTOR_COUNT] = {};
+  static int64_t history[MOTOR_COUNT][SPEED_TAPS + 1] = {};
+  static size_t head = 0;
 
   bool zero[MOTOR_COUNT];
   bool invert[MOTOR_COUNT];
+  float cpr[MOTOR_COUNT];
   portENTER_CRITICAL(&runMux);
   for (size_t i = 0; i < MOTOR_COUNT; i++) {
     zero[i] = encoderZero[i];
     encoderZero[i] = false;
     invert[i] = encoderInvert[i];
+    cpr[i] = motorCpr[i];
   }
   portEXIT_CRITICAL(&runMux);
 
   bool speedDue = now - lastSpeedMs >= SPEED_WINDOW_MS;
   float dt = (now - lastSpeedMs) / 1000.0f;
   if (speedDue) lastSpeedMs = now;
+  head = (head + 1) % (SPEED_TAPS + 1);
+  size_t oldest = (head + 1) % (SPEED_TAPS + 1);
+  constexpr float windowS = SPEED_TAPS * (CONTROL_PERIOD_US / 1e6f);
 
   EncoderStatus status[MOTOR_COUNT];
   for (size_t i = 0; i < MOTOR_COUNT; i++) {
     if (zero[i]) {
       encoders[i].clearCount();
       lastCount[i] = 0;
+      for (int64_t& h : history[i]) h = 0;
     }
     int64_t raw = encoders[i].getCount();
+    int64_t signedCount = invert[i] ? -raw : raw;
+    history[i][head] = signedCount;
+    speedRpm[i] = (signedCount - history[i][oldest]) / windowS * 60.0f / cpr[i];
     if (speedDue && dt > 0) {
       countsPerSec[i] = (raw - lastCount[i]) / dt;
       lastCount[i] = raw;
     }
-    status[i].count = invert[i] ? -raw : raw;
+    status[i].count = signedCount;
     status[i].countsPerSec = invert[i] ? -countsPerSec[i] : countsPerSec[i];
   }
 
@@ -508,6 +717,7 @@ void readEncoders(uint32_t now) {
 
 void setup() {
   Serial.begin(SERIAL_BAUD);
+  logQueue = xQueueCreate(LOG_QUEUE_LENGTH, sizeof(LogEntry));
   setupMotors();
   // setup() runs inside the loop task, so this is the task loop() runs in
   mainLoopTask = xTaskGetCurrentTaskHandle();

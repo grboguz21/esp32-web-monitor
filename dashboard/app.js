@@ -1,5 +1,5 @@
 // Must match SERIAL_BAUD in src/main.cpp
-const BAUD_RATE = 115200;
+const BAUD_RATE = 460800;
 // ESP32 sends a heartbeat every 500 ms; consider it lost after 3 missed beats
 const HEARTBEAT_TIMEOUT_MS = 1500;
 const MAX_LOG_LINES = 200;
@@ -50,6 +50,20 @@ const els = {
   testDutyNow: document.getElementById('testDutyNow'),
   pwmChartTitle: document.getElementById('pwmChartTitle'),
   testStartBtn: document.getElementById('testStartBtn'),
+  spdCard: document.getElementById('spdCard'),
+  spdBadge: document.getElementById('spdBadge'),
+  spdMotor: document.getElementById('spdMotor'),
+  spdMode: document.getElementById('spdMode'),
+  spdTarget: document.getElementById('spdTarget'),
+  spdKp: document.getElementById('spdKp'),
+  spdKi: document.getElementById('spdKi'),
+  spdStartBtn: document.getElementById('spdStartBtn'),
+  spdStopBtn: document.getElementById('spdStopBtn'),
+  spdTargetNow: document.getElementById('spdTargetNow'),
+  spdSpeedNow: document.getElementById('spdSpeedNow'),
+  spdErrorNow: document.getElementById('spdErrorNow'),
+  spdDutyNow: document.getElementById('spdDutyNow'),
+  spdDutySplit: document.getElementById('spdDutySplit'),
   encCard: document.getElementById('encCard'),
   encBadge: document.getElementById('encBadge'),
   encChartTitle: document.getElementById('encChartTitle'),
@@ -183,6 +197,21 @@ const newEnc = () => ({ count: null, cps: 0 });
 const encData = { 1: newEnc(), 2: newEnc() };
 const encDirCheck = { 1: null, 2: null };   // null unknown, true matches +, false reversed
 let encSim = null;   // demo: { timer, count: {1,2}, speed: {1,2} }
+
+// Speed control: the firmware's SPD report for the running motor
+let spd = null;   // { mode, target, speed, ff, pi }
+const spdChart = new LiveChart(document.getElementById('spdChart'), {
+  series: [
+    { key: 'speed', label: () => t('spdSpeedNow'), short: '', color: '--series-1' },
+    { key: 'target', label: () => t('spdTargetNow'), short: '', color: '--series-2' },
+  ],
+  legend: document.getElementById('spdLegend'),
+  format: (v) => `${Math.round(v)} RPM`,
+  minSpan: 50,
+  windowMs: 20000,
+  labels: chartLabels,
+});
+const spdRunning = () => testState === 1 && spd?.mode > 0 && testOutput?.motor === Number(els.spdMotor.value);
 
 function saveEnc() {
   try { localStorage.setItem(ENC_STORAGE_KEY, JSON.stringify(encSettings)); } catch { /* storage unavailable */ }
@@ -354,6 +383,8 @@ async function closePort() {
   resetPowerData();
   resetTestData();
   resetEncData();
+  spd = null;
+  spdChart.clear();
   uptimeMs = null;
   lastBeatAt = 0;
   log(t('log.closed'));
@@ -444,6 +475,14 @@ function handleLine(line) {
       voltageChart.push(motor, voltage);
       return;
     }
+  }
+
+  if (type === 'SPD' && fields.length === 5) {
+    const [mode, target, speed, ff, pi] = fields.map(Number);
+    spd = { mode, target, speed, ff, pi };
+    spdChart.push('speed', speed);
+    spdChart.push('target', testState === 1 && mode > 0 ? target : 0);
+    return;
   }
 
   if (type === 'ENC' && fields.length === 4) {
@@ -676,8 +715,25 @@ function renderTest(state) {
     if (testOutput.remainingMs > 0) parts.push(t('remaining', { s: (testOutput.remainingMs / 1000).toFixed(1) }));
   }
   els.testDutyNow.textContent = parts.join(' · ');
+  renderSpd(state);
   renderEnc(state);
   renderKs(state);
+}
+
+function renderSpd(state) {
+  const supported = state === 'online' && spd !== null;
+  const running = supported && spdRunning();
+  els.spdBadge.textContent = !supported ? t('sensorWaiting') : running ? t('testRunning') : t('testIdle');
+  if (running) els.spdBadge.dataset.level = 'run';
+  else delete els.spdBadge.dataset.level;
+  els.spdStartBtn.disabled = !supported;
+  els.spdStopBtn.disabled = !running;
+  const show = running && spd;
+  els.spdTargetNow.textContent = show ? `${Math.round(spd.target)} RPM` : '—';
+  els.spdSpeedNow.textContent = supported ? `${Math.round(spd.speed)} RPM` : '—';
+  els.spdErrorNow.textContent = show ? `${Math.round(spd.target - spd.speed)} RPM` : '—';
+  els.spdDutyNow.textContent = show ? signedPercent(spd.ff + spd.pi) : '—';
+  els.spdDutySplit.textContent = show ? `FF ${spd.ff.toFixed(1)} % · PI ${spd.pi >= 0 ? '+' : ''}${spd.pi.toFixed(1)} %` : '—';
 }
 
 function renderEnc(state) {
@@ -820,9 +876,50 @@ function resetPowerData() {
 
 // ---------- Encoder ----------
 
+// The firmware starts with defaults after every reset, so the page re-sends its settings
 function sendEncoderSettings() {
-  for (const m of MOTORS) send(`ENCINV,${m},${encSettings.invert[m] ? 1 : 0}`);
+  for (const m of MOTORS) {
+    send(`ENCINV,${m},${encSettings.invert[m] ? 1 : 0}`);
+    if (encSettings.cpr[m] > 0) send(`CPR,${m},${encSettings.cpr[m]}`);
+  }
+  sendGains();
 }
+
+// ---------- Speed control ----------
+
+function sendGains() {
+  const kp = Math.max(0, Number(els.spdKp.value) || 0);
+  const ki = Math.max(0, Number(els.spdKi.value) || 0);
+  if (port) send(`GAIN,${kp},${ki}`);
+}
+
+function startSpeed() {
+  stopRamp();
+  stopSimTest();
+  sendGains();
+  const target = Math.max(-1200, Math.min(1200, Number(els.spdTarget.value) || 0));
+  if (port) send(`SPEED,${els.spdMotor.value},${target},${els.spdMode.value}`);
+  render();
+}
+
+function renderSpdMotors() {
+  const selected = els.spdMotor.value || '1';
+  els.spdMotor.innerHTML = '';
+  for (const [key, target] of Object.entries(TEST_TARGETS)) {
+    if (target.pin) continue;
+    els.spdMotor.add(new Option(`${t(target.label)} · ${target.in1} / ${target.in2}`, key));
+  }
+  els.spdMotor.value = selected;
+}
+
+els.spdStartBtn.addEventListener('click', startSpeed);
+els.spdStopBtn.addEventListener('click', stopTest);
+// Target and mode apply straight away while the speed loop runs; gains always
+for (const el of [els.spdTarget, els.spdMode]) {
+  el.addEventListener('change', () => { if (spdRunning()) startSpeed(); });
+}
+for (const el of [els.spdKp, els.spdKi]) el.addEventListener('change', sendGains);
+renderSpdMotors();
 
 function zeroEncoder(m) {
   if (port) send(`ENCZERO,${m}`);
@@ -1118,6 +1215,8 @@ I18N.onChange(() => {
   currentChart.renderLegend();
   voltageChart.renderLegend();
   encChart.renderLegend();
+  spdChart.renderLegend();
+  renderSpdMotors();
   renderTestPins();
   render();
   if ('serial' in navigator) refreshPorts();

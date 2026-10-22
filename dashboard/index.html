@@ -304,6 +304,49 @@
           <div class="chart" id="pwmChart"></div>
         </section>
 
+        <section class="card spd-card" id="spdCard">
+          <div class="card-head">
+            <h2 data-i18n="spdTitle">Speed control</h2>
+            <span class="badge" id="spdBadge"></span>
+          </div>
+          <div class="test-controls spd-controls">
+            <label class="field"><span data-i18n="testPin">Pin</span>
+              <select id="spdMotor"></select>
+            </label>
+            <label class="field"><span data-i18n="spdMode">Mode</span>
+              <select id="spdMode">
+                <option value="2" data-i18n="spdModePi">Feedforward + PI</option>
+                <option value="1" data-i18n="spdModeFf">Feedforward only</option>
+              </select>
+            </label>
+            <label class="field"><span data-i18n="spdTarget">Target (RPM)</span>
+              <input id="spdTarget" type="number" min="-1100" max="1100" step="50" value="300">
+            </label>
+            <label class="field"><span>Kp (V/RPM)</span>
+              <input id="spdKp" type="number" min="0" step="0.001" value="0.0089">
+            </label>
+            <label class="field"><span>Ki (V/(RPM·s))</span>
+              <input id="spdKi" type="number" min="0" step="0.01" value="0.071">
+            </label>
+            <div class="test-buttons">
+              <button id="spdStartBtn" class="btn" data-i18n="testStart">Start</button>
+              <button id="spdStopBtn" class="btn btn-danger" data-i18n="testStop">Stop</button>
+            </div>
+          </div>
+          <p class="test-warning" data-i18n="spdHint">Change the target or the gains while running; they apply right away. Defaults are the SIMC values from the step test (tau_c = 125 ms).</p>
+          <div class="tiles spd-tiles">
+            <div class="tile"><div class="tile-label" data-i18n="spdTargetNow">Target</div><div class="tile-value" id="spdTargetNow">—</div></div>
+            <div class="tile"><div class="tile-label" data-i18n="spdSpeedNow">Measured</div><div class="tile-value" id="spdSpeedNow">—</div></div>
+            <div class="tile"><div class="tile-label" data-i18n="spdErrorNow">Error</div><div class="tile-value" id="spdErrorNow">—</div></div>
+            <div class="tile"><div class="tile-label" data-i18n="spdDutyNow">Duty (FF + PI)</div><div class="tile-value" id="spdDutyNow">—</div><div class="tile-sub" id="spdDutySplit">—</div></div>
+          </div>
+          <div class="card-head">
+            <h3 class="chart-title" data-i18n="spdChart">Speed: target and measured (RPM)</h3>
+            <div class="chart-legend" id="spdLegend"></div>
+          </div>
+          <div class="chart" id="spdChart"></div>
+        </section>
+
         <section class="card enc-card" id="encCard">
           <div class="card-head">
             <h2 data-i18n="encTitle">Encoder</h2>
