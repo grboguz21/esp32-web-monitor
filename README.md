@@ -18,6 +18,8 @@ What it does right now:
 
 ![Dashboard](docs/dashboard.png)
 
+Measurements and controller tuning for motor 1 are in [docs/motor-characterization.md](docs/motor-characterization.md).
+
 ## Hardware
 
 - DOIT ESP32 DevKit V1
