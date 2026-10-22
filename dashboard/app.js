@@ -50,6 +50,9 @@ const els = {
   testDutyNow: document.getElementById('testDutyNow'),
   pwmChartTitle: document.getElementById('pwmChartTitle'),
   testStartBtn: document.getElementById('testStartBtn'),
+  encCard: document.getElementById('encCard'),
+  encBadge: document.getElementById('encBadge'),
+  encChartTitle: document.getElementById('encChartTitle'),
   ksMotor: document.getElementById('ksMotor'),
   ksType: document.getElementById('ksType'),
   ksStatus: document.getElementById('ksStatus'),
@@ -171,6 +174,32 @@ for (const entry of Object.values(ksResults)) {
   if ('minus' in entry) { entry.startMinus ??= entry.minus; delete entry.minus; }
 }
 let ramp = null;        // { timer, motor, dir, type } while a ramp runs
+
+// Encoders: latest ENC report, counts per output-shaft revolution and sign flip per motor
+const ENC_STORAGE_KEY = 'esp32-dashboard-encoder';
+let encSettings = { cpr: {}, invert: {} };
+try { encSettings = { ...encSettings, ...JSON.parse(localStorage.getItem(ENC_STORAGE_KEY)) }; } catch { /* storage unavailable */ }
+const newEnc = () => ({ count: null, cps: 0 });
+const encData = { 1: newEnc(), 2: newEnc() };
+const encDirCheck = { 1: null, 2: null };   // null unknown, true matches +, false reversed
+let encSim = null;   // demo: { timer, count: {1,2}, speed: {1,2} }
+
+function saveEnc() {
+  try { localStorage.setItem(ENC_STORAGE_KEY, JSON.stringify(encSettings)); } catch { /* storage unavailable */ }
+}
+
+// RPM when every motor's counts per rev is known, otherwise raw counts per second
+const encUseRpm = () => MOTORS.every((m) => encSettings.cpr[m] > 0);
+const encSpeedValue = (m, cps) => (encUseRpm() ? (cps * 60) / encSettings.cpr[m] : cps);
+
+const encChart = new LiveChart(document.getElementById('encChart'), {
+  series: motorSeries,
+  legend: document.getElementById('encLegend'),
+  format: (v) => (encUseRpm() ? `${Math.round(v)} RPM` : `${Math.round(v)} ${t('cpsUnit')}`),
+  minSpan: 20,
+  windowMs: 20000,
+  labels: chartLabels,
+});
 
 function saveKs() {
   try { localStorage.setItem(KS_STORAGE_KEY, JSON.stringify(ksResults)); } catch { /* storage unavailable */ }
@@ -324,6 +353,7 @@ async function closePort() {
   health = null;
   resetPowerData();
   resetTestData();
+  resetEncData();
   uptimeMs = null;
   lastBeatAt = 0;
   log(t('log.closed'));
@@ -371,6 +401,7 @@ function handleLine(line) {
   if (type === 'HELLO' && fields.length === 2) {
     device = { name: fields[0], version: fields[1] };
     log(t('log.identified', device));
+    sendEncoderSettings();   // the firmware starts with no sign flips after a reset
     return;
   }
 
@@ -413,6 +444,18 @@ function handleLine(line) {
       voltageChart.push(motor, voltage);
       return;
     }
+  }
+
+  if (type === 'ENC' && fields.length === 4) {
+    const [c1, s1, c2, s2] = fields.map(Number);
+    for (const [m, count, cps] of [[1, c1, s1], [2, c2, s2]]) {
+      encData[m] = { count, cps };
+      encChart.push(m, encSpeedValue(m, cps));
+      // While this motor is driven, does + duty give positive counts?
+      const duty = testOutput?.motor === m && testState === 1 ? testOutput.duty : 0;
+      if (duty !== 0 && Math.abs(cps) > 20) encDirCheck[m] = Math.sign(cps) === Math.sign(duty);
+    }
+    return;
   }
 
   if (type === 'RUNOUT' && fields.length === 4) {
@@ -633,7 +676,36 @@ function renderTest(state) {
     if (testOutput.remainingMs > 0) parts.push(t('remaining', { s: (testOutput.remainingMs / 1000).toFixed(1) }));
   }
   els.testDutyNow.textContent = parts.join(' · ');
+  renderEnc(state);
   renderKs(state);
+}
+
+function renderEnc(state) {
+  const live = (state === 'online' && encData[1].count !== null) || encSim !== null;
+  els.encBadge.textContent = encSim ? t('testDemo') : live ? t('encLive') : t('sensorWaiting');
+  if (encSim) els.encBadge.dataset.level = 'demo';
+  else if (live) els.encBadge.dataset.level = 'ok';
+  else delete els.encBadge.dataset.level;
+  els.encChartTitle.textContent = t('encChart', { unit: encUseRpm() ? 'RPM' : t('cpsUnit') });
+
+  for (const row of els.encCard.querySelectorAll('[data-emotor]')) {
+    const m = Number(row.dataset.emotor);
+    const field = (name) => row.querySelector(`[data-efield="${name}"]`);
+    const d = encData[m];
+    const cpr = encSettings.cpr[m] || 0;
+    const has = live && d.count !== null;
+    field('count').textContent = has ? d.count.toLocaleString() : '—';
+    field('turns').textContent = has && cpr ? t('encTurns', { n: (d.count / cpr).toFixed(2) }) : '—';
+    field('speed').textContent = !has ? '—'
+      : cpr ? `${Math.round((d.cps * 60) / cpr)} RPM` : `${Math.round(d.cps)} ${t('cpsUnit')}`;
+    const check = encDirCheck[m];
+    field('dir').textContent = check === null ? t('encDirUnknown') : check ? t('encDirOk') : t('encDirBad');
+    field('dir').dataset.state = check === null ? '' : check ? 'ok' : 'bad';
+    field('invert').checked = Boolean(encSettings.invert[m]);
+    field('zero').disabled = !live;
+    field('oneTurn').disabled = !live || !d.count;
+    if (document.activeElement !== field('cpr')) field('cpr').value = cpr || '';
+  }
 }
 
 function renderKs(state) {
@@ -697,6 +769,7 @@ els.clearLogBtn.addEventListener('click', () => { els.log.textContent = ''; });
 // once in a while; the shared supply sags with the total current.
 function startDemo() {
   resetPowerData();
+  startEncSim();
   let tick = 0;
   const noise = { 1: 0, 2: 0 };
   const profiles = {
@@ -732,8 +805,10 @@ function stopDemo() {
   clearInterval(demoTimer);
   demoTimer = null;
   stopSimTest();
+  stopEncSim();
   resetPowerData();
   resetTestData();
+  resetEncData();
   render();
 }
 
@@ -741,6 +816,86 @@ function resetPowerData() {
   for (const m of MOTORS) Object.assign(motorPower[m], newMotorPower());
   currentChart.clear();
   voltageChart.clear();
+}
+
+// ---------- Encoder ----------
+
+function sendEncoderSettings() {
+  for (const m of MOTORS) send(`ENCINV,${m},${encSettings.invert[m] ? 1 : 0}`);
+}
+
+function zeroEncoder(m) {
+  if (port) send(`ENCZERO,${m}`);
+  else if (encSim) encSim.count[m] = 0;
+}
+
+// Demo only: a first-order motor (dead band near the measured start threshold) answering
+// the simulated run, reported as the firmware's ENC line
+function startEncSim() {
+  stopEncSim();
+  const CPR = 700;
+  const sim = { count: { 1: 0, 2: 0 }, speed: { 1: 0, 2: 0 }, last: performance.now() };
+  sim.timer = setInterval(() => {
+    const now = performance.now();
+    const dt = (now - sim.last) / 1000;
+    sim.last = now;
+    const parts = [];
+    for (const m of MOTORS) {
+      const duty = testOutput?.motor === m && testState === 1 ? testOutput.duty : 0;
+      const drive = Math.max(0, Math.abs(duty) - 11) / 89;
+      const target = Math.sign(duty) * drive * (1350 / 60) * CPR * (m === 2 ? 0.95 : 1);
+      sim.speed[m] += (target - sim.speed[m]) * Math.min(1, dt / 0.12);
+      sim.count[m] += sim.speed[m] * dt;
+      const sign = encSettings.invert[m] ? -1 : 1;
+      const noise = Math.abs(sim.speed[m]) > 1 ? (Math.random() - 0.5) * 30 : 0;
+      parts.push(Math.round(sign * sim.count[m]), Math.round(sign * (sim.speed[m] + noise)));
+    }
+    handleLine(`ENC,${parts.join(',')}`);
+  }, 40);
+  encSim = sim;
+}
+
+function stopEncSim() {
+  if (!encSim) return;
+  clearInterval(encSim.timer);
+  encSim = null;
+}
+
+function resetEncData() {
+  for (const m of MOTORS) {
+    encData[m] = newEnc();
+    encDirCheck[m] = null;
+  }
+  encChart.clear();
+}
+
+for (const row of els.encCard.querySelectorAll('[data-emotor]')) {
+  const m = Number(row.dataset.emotor);
+  const field = (name) => row.querySelector(`[data-efield="${name}"]`);
+  field('zero').addEventListener('click', () => zeroEncoder(m));
+  field('oneTurn').addEventListener('click', () => {
+    const count = Math.abs(Math.round(encData[m].count ?? 0));
+    if (!count) return;
+    encSettings.cpr[m] = count;
+    saveEnc();
+    encChart.clear();
+    render();
+  });
+  field('cpr').addEventListener('change', () => {
+    const cpr = Math.round(Number(field('cpr').value));
+    if (cpr > 0) encSettings.cpr[m] = cpr;
+    else delete encSettings.cpr[m];
+    saveEnc();
+    encChart.clear();
+    render();
+  });
+  field('invert').addEventListener('change', () => {
+    encSettings.invert[m] = field('invert').checked;
+    saveEnc();
+    encDirCheck[m] = null;   // re-check with the new sign
+    if (port) send(`ENCINV,${m},${encSettings.invert[m] ? 1 : 0}`);
+    render();
+  });
 }
 
 // ---------- Motor direction test ----------
@@ -960,6 +1115,7 @@ I18N.onChange(() => {
   renderThemeButton();
   currentChart.renderLegend();
   voltageChart.renderLegend();
+  encChart.renderLegend();
   renderTestPins();
   render();
   if ('serial' in navigator) refreshPorts();

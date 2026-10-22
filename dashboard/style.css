@@ -846,3 +846,12 @@ h2[data-help] {
   color: var(--text);
   font: inherit;
 }
+
+/* Encoder */
+.enc-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 10px; }
+.enc-actions .ks-supply { margin-left: auto; }
+.enc-dir { font-size: 0.85rem !important; }
+.enc-dir[data-state="ok"] { color: var(--online); }
+.enc-dir[data-state="bad"] { color: var(--avoid); }
+.enc-invert { display: inline-flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 0.75rem; color: var(--muted); cursor: pointer; }
+.enc-card .motor-row + .motor-row { margin-top: 18px; }

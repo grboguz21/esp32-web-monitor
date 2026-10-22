@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_INA219.h>
+#include <ESP32Encoder.h>
 #include <esp_system.h>
 
 constexpr uint32_t SERIAL_BAUD = 115200;
@@ -33,10 +34,12 @@ struct MotorPins {
   int ena;
   int in1;
   int in2;
+  int encA;
+  int encB;
 };
 constexpr MotorPins MOTOR_PINS[] = {
-  {25, 26, 27},   // motor 1
-  {18, 19, 23},   // motor 2
+  {25, 26, 27, 34, 35},   // motor 1 (GPIO34/35 have no internal pull-ups)
+  {18, 19, 23, 16, 17},   // motor 2
 };
 constexpr size_t MOTOR_COUNT = sizeof(MOTOR_PINS) / sizeof(MOTOR_PINS[0]);
 // The onboard LED can stand in for a motor to check the test without any wiring
@@ -48,8 +51,9 @@ constexpr uint32_t PWM_MAX = (1 << PWM_BITS) - 1;
 constexpr uint32_t MOTOR_UPDATE_MS = 5;
 constexpr uint32_t MOTOR_WATCHDOG_MS = 1000;  // stop if the dashboard goes quiet this long
 constexpr uint32_t MOTOR_REPORT_MS = 40;      // 25 Hz
+constexpr uint32_t SPEED_WINDOW_MS = 50;      // encoder speed = count change over this window
 
-constexpr const char* FIRMWARE_VERSION = "0.11.0";
+constexpr const char* FIRMWARE_VERSION = "0.12.0";
 
 // Protocol (one message per line):
 //   ESP32 -> PC : HB,<uptime_ms>               heartbeat
@@ -63,6 +67,9 @@ constexpr const char* FIRMWARE_VERSION = "0.11.0";
 //                 RUNOUT,<state>,<motor>,<duty>,<remaining_ms>
 //                 (state 0 idle, 1 running, 2 stopped by the watchdog, 3 duration finished;
 //                  duty in % with the sign as direction; remaining_ms 0 when there is no duration)
+//                 ENC,<count1>,<cps1>,<count2>,<cps2>
+//                 (encoder counts and counts per second; the sign follows the + direction
+//                  once ENCINV has been set to match)
 //   PC -> ESP32 : HELLO?                       request HELLO and INFO
 //                 PING                         dashboard is alive (keeps the motor allowed to run)
 //                 RUN,<target>,<duty>,<duration_ms>
@@ -70,6 +77,8 @@ constexpr const char* FIRMWARE_VERSION = "0.11.0";
 //                                              target 3 is the onboard LED (brightness = |duty|);
 //                                              duration_ms 0 runs until STOP
 //                 STOP                         stop the motor
+//                 ENCZERO,<motor>              zero that motor's encoder count
+//                 ENCINV,<motor>,<0|1>         flip that encoder's sign
 
 struct LoopStats {
   uint32_t lastStartUs = 0;
@@ -99,6 +108,17 @@ MotorRun motorRun;
 RunState runState = RunState::Idle;
 uint32_t lastPingMs = 0;
 float outputDuty = 0;   // duty currently driven, signed
+
+struct EncoderStatus {
+  int64_t count = 0;
+  float countsPerSec = 0;
+};
+
+// Encoder readings (written by loop() on core 1) and settings (written by the telemetry task)
+EncoderStatus encoderStatus[MOTOR_COUNT];
+bool encoderInvert[MOTOR_COUNT] = {};
+bool encoderZero[MOTOR_COUNT] = {};   // set by ENCZERO, consumed by loop()
+ESP32Encoder encoders[MOTOR_COUNT];
 
 struct PowerWindow {
   float sumVoltage = 0;
@@ -172,6 +192,20 @@ void handleCommand(const String& cmd) {
     portENTER_CRITICAL(&runMux);
     runState = RunState::Idle;
     portEXIT_CRITICAL(&runMux);
+  } else if (cmd.startsWith("ENCZERO,")) {
+    unsigned motor;
+    if (sscanf(cmd.c_str(), "ENCZERO,%u", &motor) == 1 && motor >= 1 && motor <= MOTOR_COUNT) {
+      portENTER_CRITICAL(&runMux);
+      encoderZero[motor - 1] = true;
+      portEXIT_CRITICAL(&runMux);
+    }
+  } else if (cmd.startsWith("ENCINV,")) {
+    unsigned motor, invert;
+    if (sscanf(cmd.c_str(), "ENCINV,%u,%u", &motor, &invert) == 2 && motor >= 1 && motor <= MOTOR_COUNT) {
+      portENTER_CRITICAL(&runMux);
+      encoderInvert[motor - 1] = invert != 0;
+      portEXIT_CRITICAL(&runMux);
+    }
   } else if (cmd.startsWith("RUN,")) {
     unsigned motor;
     float duty;
@@ -341,6 +375,13 @@ void sendMotorRun() {
   }
   Serial.printf("RUNOUT,%u,%d,%.1f,%lu\n", (unsigned)state, run.motor + 1, duty,
                 (unsigned long)remaining);
+
+  portENTER_CRITICAL(&runMux);
+  EncoderStatus enc[MOTOR_COUNT];
+  for (size_t i = 0; i < MOTOR_COUNT; i++) enc[i] = encoderStatus[i];
+  portEXIT_CRITICAL(&runMux);
+  Serial.printf("ENC,%lld,%.0f,%lld,%.0f\n", enc[0].count, enc[0].countsPerSec,
+                enc[1].count, enc[1].countsPerSec);
 }
 
 // Runs on core 0 and owns the serial port and I2C bus, so this I/O never slows loop() down
@@ -363,13 +404,19 @@ void telemetryTask(void*) {
 // ---------- Motor output (core 1) ----------
 
 void setupMotors() {
-  for (const MotorPins& p : MOTOR_PINS) {
+  ESP32Encoder::useInternalWeakPullResistors = puType::up;   // ignored on GPIO34/35
+  for (size_t i = 0; i < MOTOR_COUNT; i++) {
+    const MotorPins& p = MOTOR_PINS[i];
     pinMode(p.ena, OUTPUT);
     digitalWrite(p.ena, LOW);   // coast
     ledcAttach(p.in1, PWM_FREQ_HZ, PWM_BITS);
     ledcAttach(p.in2, PWM_FREQ_HZ, PWM_BITS);
     ledcWrite(p.in1, 0);
     ledcWrite(p.in2, 0);
+    // Counted by the PCNT hardware, so no pulses are lost to interrupt timing
+    encoders[i].attachFullQuad(p.encA, p.encB);
+    encoders[i].setFilter(250);   // ignore glitches shorter than ~3 us
+    encoders[i].clearCount();
   }
   ledcAttach(LED_PIN, PWM_FREQ_HZ, PWM_BITS);
   ledcWrite(LED_PIN, 0);
@@ -383,6 +430,8 @@ void applyDuty(size_t motor, float duty, bool enabled) {
   ledcWrite(p.in2, duty < 0 ? pwm : 0);
   digitalWrite(p.ena, enabled ? HIGH : LOW);
 }
+
+void readEncoders(uint32_t now);
 
 void runMotors() {
   static uint32_t lastUpdate = 0;
@@ -412,6 +461,48 @@ void runMotors() {
 
   portENTER_CRITICAL(&runMux);
   outputDuty = !running ? 0 : ledActive ? ledDuty : run.duty;
+  portEXIT_CRITICAL(&runMux);
+
+  readEncoders(now);
+}
+
+// Counts every update, speed from the count change over SPEED_WINDOW_MS
+void readEncoders(uint32_t now) {
+  static uint32_t lastSpeedMs = 0;
+  static int64_t lastCount[MOTOR_COUNT] = {};
+  static float countsPerSec[MOTOR_COUNT] = {};
+
+  bool zero[MOTOR_COUNT];
+  bool invert[MOTOR_COUNT];
+  portENTER_CRITICAL(&runMux);
+  for (size_t i = 0; i < MOTOR_COUNT; i++) {
+    zero[i] = encoderZero[i];
+    encoderZero[i] = false;
+    invert[i] = encoderInvert[i];
+  }
+  portEXIT_CRITICAL(&runMux);
+
+  bool speedDue = now - lastSpeedMs >= SPEED_WINDOW_MS;
+  float dt = (now - lastSpeedMs) / 1000.0f;
+  if (speedDue) lastSpeedMs = now;
+
+  EncoderStatus status[MOTOR_COUNT];
+  for (size_t i = 0; i < MOTOR_COUNT; i++) {
+    if (zero[i]) {
+      encoders[i].clearCount();
+      lastCount[i] = 0;
+    }
+    int64_t raw = encoders[i].getCount();
+    if (speedDue && dt > 0) {
+      countsPerSec[i] = (raw - lastCount[i]) / dt;
+      lastCount[i] = raw;
+    }
+    status[i].count = invert[i] ? -raw : raw;
+    status[i].countsPerSec = invert[i] ? -countsPerSec[i] : countsPerSec[i];
+  }
+
+  portENTER_CRITICAL(&runMux);
+  for (size_t i = 0; i < MOTOR_COUNT; i++) encoderStatus[i] = status[i];
   portEXIT_CRITICAL(&runMux);
 }
 
