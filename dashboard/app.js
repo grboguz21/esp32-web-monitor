@@ -40,6 +40,15 @@ const els = {
   hLoopMax: document.getElementById('hLoopMax'),
   hLoopHz: document.getElementById('hLoopHz'),
   hStack: document.getElementById('hStack'),
+  powerCard: document.getElementById('powerCard'),
+  powerBadge: document.getElementById('powerBadge'),
+  powerHint: document.getElementById('powerHint'),
+  resetPeaksBtn: document.getElementById('resetPeaksBtn'),
+  pVoltage: document.getElementById('pVoltage'),
+  pVoltageSub: document.getElementById('pVoltageSub'),
+  pCurrent: document.getElementById('pCurrent'),
+  pCurrentSub: document.getElementById('pCurrentSub'),
+  pPower: document.getElementById('pPower'),
   log: document.getElementById('log'),
   clearLogBtn: document.getElementById('clearLogBtn'),
 };
@@ -75,6 +84,10 @@ let readableClosed = null;
 let device = null;      // { name, version }
 let info = null;        // chip info and reset reason, from INFO
 let health = null;      // latest HEALTH values
+let power = null;       // latest POWER averages: { voltage, currentMa, powerMw }
+let powerSensor = 'unknown';  // 'unknown' (no POWER yet), 'missing' or 'ok'
+let minVoltage = null;  // extremes since connecting or the last reset
+let maxCurrentMa = null;
 let uptimeMs = null;
 let lastBeatAt = 0;     // performance.now() of the last heartbeat
 
@@ -189,6 +202,10 @@ async function closePort() {
   device = null;
   info = null;
   health = null;
+  power = null;
+  powerSensor = 'unknown';
+  minVoltage = null;
+  maxCurrentMa = null;
   uptimeMs = null;
   lastBeatAt = 0;
   log(t('log.closed'));
@@ -251,6 +268,21 @@ function handleLine(line) {
     return;
   }
 
+  if (type === 'POWER' && fields[0] === 'NA') {
+    powerSensor = 'missing';
+    power = null;
+    return;
+  }
+
+  if (type === 'POWER' && fields.length === 5) {
+    const [voltage, currentMa, powerMw, windowMinV, windowMaxMa] = fields.map(Number);
+    power = { voltage, currentMa, powerMw };
+    powerSensor = 'ok';
+    minVoltage = minVoltage === null ? windowMinV : Math.min(minVoltage, windowMinV);
+    maxCurrentMa = maxCurrentMa === null ? windowMaxMa : Math.max(maxCurrentMa, windowMaxMa);
+    return;
+  }
+
   // Anything else (boot messages, debug prints) goes to the log as-is
   log(line);
 }
@@ -291,6 +323,7 @@ function render() {
 
   renderInfo();
   renderHealth(state);
+  renderPower(state);
 }
 
 function formatBytes(n) {
@@ -362,6 +395,42 @@ function renderHealth(state) {
   els.hStack.classList.toggle('warn', health.stackFree < STACK_WARN_BYTES);
 }
 
+function formatCurrent(ma) {
+  if (Math.abs(ma) >= 1000) return `${(ma / 1000).toFixed(2)} A`;
+  return `${Math.round(ma)} mA`;
+}
+
+function formatPower(mw) {
+  if (Math.abs(mw) >= 1000) return `${(mw / 1000).toFixed(2)} W`;
+  return `${Math.round(mw)} mW`;
+}
+
+function renderPower(state) {
+  const sensor = state === 'online' ? powerSensor : 'unknown';
+  const badge = { ok: ['sensorOk', 'ok'], missing: ['sensorMissing', 'bad'], unknown: ['sensorWaiting', ''] }[sensor];
+
+  els.powerCard.dataset.sensor = sensor;
+  els.powerCard.toggleAttribute('data-stale', state !== 'online');
+  els.powerBadge.textContent = t(badge[0]);
+  if (badge[1]) els.powerBadge.dataset.level = badge[1];
+  else delete els.powerBadge.dataset.level;
+  els.powerHint.hidden = sensor !== 'missing';
+  els.resetPeaksBtn.disabled = !power;
+
+  if (!power) {
+    for (const el of [els.pVoltage, els.pVoltageSub, els.pCurrent, els.pCurrentSub, els.pPower]) {
+      el.textContent = '—';
+    }
+    return;
+  }
+
+  els.pVoltage.textContent = `${power.voltage.toFixed(2)} V`;
+  els.pVoltageSub.textContent = t('lowestV', { v: `${minVoltage.toFixed(2)} V` });
+  els.pCurrent.textContent = formatCurrent(power.currentMa);
+  els.pCurrentSub.textContent = t('peakI', { i: formatCurrent(maxCurrentMa) });
+  els.pPower.textContent = formatPower(power.powerMw);
+}
+
 function log(message) {
   const time = new Date().toLocaleTimeString(I18N.lang === 'tr' ? 'tr-TR' : 'en-GB');
   const lines = (els.log.textContent + `[${time}] ${message}\n`).split('\n');
@@ -390,6 +459,11 @@ if (!('serial' in navigator)) {
 }
 
 els.clearLogBtn.addEventListener('click', () => { els.log.textContent = ''; });
+els.resetPeaksBtn.addEventListener('click', () => {
+  minVoltage = power?.voltage ?? null;
+  maxCurrentMa = power?.currentMa ?? null;
+  render();
+});
 
 // ---------- Theme ----------
 

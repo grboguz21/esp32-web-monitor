@@ -332,7 +332,18 @@ select:disabled { opacity: 0.6; }
 .card-note { color: var(--muted); font-size: 0.72rem; }
 
 .health { transition: opacity 0.2s; }
-.health[data-stale] { opacity: 0.45; }
+.health[data-stale],
+.power[data-stale] { opacity: 0.45; }
+
+.card-actions { display: flex; align-items: center; gap: 8px; }
+.power-hint {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--secondary-bg);
+  color: var(--muted);
+  font-size: 0.78rem;
+}
 
 .tiles {
   display: grid;

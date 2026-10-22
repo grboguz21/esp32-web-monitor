@@ -118,6 +118,34 @@
           </div>
         </section>
 
+        <section class="card power" id="powerCard" data-sensor="waiting">
+          <div class="card-head">
+            <h2 data-i18n="power">Power</h2>
+            <div class="card-actions">
+              <span class="badge" id="powerBadge"></span>
+              <button id="resetPeaksBtn" class="btn btn-ghost" data-i18n="resetPeaks">Reset</button>
+            </div>
+          </div>
+          <p class="power-hint" id="powerHint" data-i18n="powerHint" hidden></p>
+          <div class="tiles">
+            <div class="tile">
+              <div class="tile-label" data-help="pVoltage"><span data-i18n="pVoltage">Supply voltage</span></div>
+              <div class="tile-value" id="pVoltage">—</div>
+              <div class="tile-sub" id="pVoltageSub">—</div>
+            </div>
+            <div class="tile">
+              <div class="tile-label" data-help="pCurrent"><span data-i18n="pCurrent">Motor current</span></div>
+              <div class="tile-value" id="pCurrent">—</div>
+              <div class="tile-sub" id="pCurrentSub">—</div>
+            </div>
+            <div class="tile">
+              <div class="tile-label" data-help="pPower"><span data-i18n="pPower">Power draw</span></div>
+              <div class="tile-value" id="pPower">—</div>
+              <div class="tile-sub" data-i18n="powerSub">voltage × current</div>
+            </div>
+          </div>
+        </section>
+
         <section class="card log-card">
           <div class="card-head">
             <h2 data-help="log"><span data-i18n="serialOutput">Serial output</span></h2>

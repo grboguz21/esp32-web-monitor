@@ -1,4 +1,6 @@
 #include <Arduino.h>
+#include <Wire.h>
+#include <Adafruit_INA219.h>
 #include <esp_system.h>
 
 constexpr uint32_t SERIAL_BAUD = 115200;
@@ -7,12 +9,21 @@ constexpr uint32_t HEALTH_INTERVAL_MS = 1000;
 
 // Dashboard communication runs on core 0 so loop() keeps core 1 to itself
 constexpr BaseType_t TELEMETRY_CORE = 0;
-constexpr uint32_t TELEMETRY_STACK_BYTES = 4096;
+constexpr uint32_t TELEMETRY_STACK_BYTES = 6144;
 constexpr UBaseType_t TELEMETRY_PRIORITY = 1;
 constexpr uint32_t TELEMETRY_PERIOD_MS = 5;
 
 constexpr const char* DEVICE_NAME = "ESP32";
-constexpr const char* FIRMWARE_VERSION = "0.3.0";
+// INA219 power sensor on the default I2C pins; optional, detected at runtime
+constexpr int I2C_SDA_PIN = 21;
+constexpr int I2C_SCL_PIN = 22;
+constexpr uint8_t POWER_SENSOR_ADDRESS = 0x40;
+constexpr uint32_t POWER_SAMPLE_MS = 20;      // 50 Hz, averaged into each report
+constexpr uint32_t POWER_REPORT_MS = 250;
+constexpr uint32_t POWER_ABSENT_REPORT_MS = 1000;
+constexpr uint32_t SENSOR_PROBE_MS = 2000;
+
+constexpr const char* FIRMWARE_VERSION = "0.4.0";
 
 // Protocol (one message per line):
 //   ESP32 -> PC : HB,<uptime_ms>               heartbeat
@@ -20,6 +31,9 @@ constexpr const char* FIRMWARE_VERSION = "0.3.0";
 //                 INFO,<chip>,<revision>,<cores>,<cpu_mhz>,<flash_bytes>,<heap_bytes>,<mac>,<reset_reason>
 //                 HEALTH,<free_heap>,<min_free_heap>,<max_alloc_heap>,<loop_avg_us>,<loop_max_us>,<loop_hz>,<stack_free_bytes>
 //                 (loop_* and stack_free_bytes describe the loop() task on core 1)
+//                 POWER,<voltage_V>,<current_mA>,<power_mW>,<min_voltage_V>,<max_current_mA>
+//                 (averages and extremes over the last report window)
+//                 POWER,NA                     no INA219 found
 //   PC -> ESP32 : HELLO?                       request HELLO and INFO
 
 struct LoopStats {
@@ -34,6 +48,20 @@ LoopStats loopStats;
 portMUX_TYPE loopStatsMux = portMUX_INITIALIZER_UNLOCKED;
 
 TaskHandle_t mainLoopTask = nullptr;
+
+struct PowerWindow {
+  float sumVoltage = 0;
+  float sumCurrentMa = 0;
+  float sumPowerMw = 0;
+  float minVoltage = 0;
+  float maxCurrentMa = 0;
+  uint32_t count = 0;
+};
+
+// Only touched by the telemetry task on core 0
+Adafruit_INA219 ina219(POWER_SENSOR_ADDRESS);
+bool powerSensorReady = false;
+PowerWindow powerWindow;
 
 const char* resetReasonName(esp_reset_reason_t reason) {
   switch (reason) {
@@ -141,14 +169,83 @@ void sendHealth() {
                 (unsigned long)uxTaskGetStackHighWaterMark(mainLoopTask));
 }
 
-// Runs on core 0 and owns the serial port, so serial I/O never slows loop() down
+bool i2cDevicePresent(uint8_t address) {
+  Wire.beginTransmission(address);
+  return Wire.endTransmission() == 0;
+}
+
+// Looks for the sensor every SENSOR_PROBE_MS until found, then samples it
+void samplePower() {
+  static uint32_t lastProbe = 0;
+  static uint32_t lastSample = 0;
+  uint32_t now = millis();
+
+  if (!powerSensorReady) {
+    if (lastProbe != 0 && now - lastProbe < SENSOR_PROBE_MS) return;
+    lastProbe = now;
+    // begin() also rewrites the calibration, which the chip loses when unplugged
+    if (i2cDevicePresent(POWER_SENSOR_ADDRESS) && ina219.begin()) {
+      powerSensorReady = true;
+      powerWindow = PowerWindow();
+    }
+    return;
+  }
+
+  if (now - lastSample < POWER_SAMPLE_MS) return;
+  lastSample = now;
+
+  float voltage = ina219.getBusVoltage_V();   // measured at Vin-, i.e. what the load sees
+  float currentMa = ina219.getCurrent_mA();
+  float powerMw = voltage * currentMa;
+
+  if (powerWindow.count == 0) {
+    powerWindow.minVoltage = voltage;
+    powerWindow.maxCurrentMa = currentMa;
+  }
+  powerWindow.sumVoltage += voltage;
+  powerWindow.sumCurrentMa += currentMa;
+  powerWindow.sumPowerMw += powerMw;
+  powerWindow.minVoltage = min(powerWindow.minVoltage, voltage);
+  powerWindow.maxCurrentMa = max(powerWindow.maxCurrentMa, currentMa);
+  powerWindow.count++;
+}
+
+void sendPower() {
+  static uint32_t lastReport = 0;
+  uint32_t now = millis();
+
+  if (powerSensorReady && now - lastReport >= POWER_REPORT_MS) {
+    lastReport = now;
+    if (!i2cDevicePresent(POWER_SENSOR_ADDRESS)) {   // unplugged since the last report
+      powerSensorReady = false;
+      return;
+    }
+    if (powerWindow.count == 0) return;
+    float n = powerWindow.count;
+    Serial.printf("POWER,%.3f,%.1f,%.1f,%.3f,%.1f\n",
+                  powerWindow.sumVoltage / n,
+                  powerWindow.sumCurrentMa / n,
+                  powerWindow.sumPowerMw / n,
+                  powerWindow.minVoltage,
+                  powerWindow.maxCurrentMa);
+    powerWindow = PowerWindow();
+  } else if (!powerSensorReady && now - lastReport >= POWER_ABSENT_REPORT_MS) {
+    lastReport = now;
+    Serial.print("POWER,NA\n");
+  }
+}
+
+// Runs on core 0 and owns the serial port and I2C bus, so this I/O never slows loop() down
 void telemetryTask(void*) {
+  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
   printHello();
   printInfo();
   for (;;) {
     readCommands();
     sendHeartbeat();
     sendHealth();
+    samplePower();
+    sendPower();
     vTaskDelay(pdMS_TO_TICKS(TELEMETRY_PERIOD_MS));
   }
 }
