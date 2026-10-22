@@ -129,8 +129,14 @@ const voltageChart = new LiveChart(document.getElementById('voltageChart'), {
 // Motor direction test: one motor at a signed duty, reported back as RUNOUT
 const TEST_STATES = ['testIdle', 'testRunning', 'testWatchdog', 'testDone'];
 const TEST_MOTOR_STORAGE_KEY = 'esp32-dashboard-test-motor';
-// L298N inputs per motor (board labels): + direction drives IN1, - direction drives IN2
-const MOTOR_TEST_PINS = { 1: { in1: 'D26', in2: 'D27' }, 2: { in1: 'D19', in2: 'D23' } };
+// Test targets (board labels): each motor's L298N inputs, + drives IN1 and - drives IN2;
+// target 3 is the onboard LED on D2, which has no direction
+const TEST_TARGETS = {
+  1: { label: 'motor1', in1: 'D26', in2: 'D27' },
+  2: { label: 'motor2', in1: 'D19', in2: 'D23' },
+  3: { label: 'testLed', pin: 'D2' },
+};
+const isLedTarget = (target) => Boolean(TEST_TARGETS[target]?.pin);
 let testDirection = 1;   // +1 or -1
 let testState = null;    // null until the firmware reports RUNOUT, then 0 idle / 1 running / 2 watchdog / 3 done
 let testOutput = null;   // { motor, duty, remainingMs }
@@ -152,11 +158,11 @@ function renderTestPins() {
     try { selected = localStorage.getItem(TEST_MOTOR_STORAGE_KEY); } catch { /* storage unavailable */ }
   }
   els.testPin.innerHTML = '';
-  for (const m of MOTORS) {
-    const pins = MOTOR_TEST_PINS[m];
-    els.testPin.add(new Option(`${t(`motor${m}`)} · ${pins.in1} / ${pins.in2}`, String(m)));
+  for (const [key, target] of Object.entries(TEST_TARGETS)) {
+    const pins = target.pin ?? `${target.in1} / ${target.in2}`;
+    els.testPin.add(new Option(`${t(target.label)} · ${pins}`, key));
   }
-  els.testPin.value = selected in MOTOR_TEST_PINS ? selected : '1';
+  els.testPin.value = selected in TEST_TARGETS ? selected : '1';
 }
 
 let uptimeMs = null;
@@ -547,7 +553,9 @@ function renderTest(state) {
   const supported = testState !== null;
   let badge;
   if (simTimer !== null) badge = ['testDemo', 'demo'];
-  else if (state === 'online' && supported) badge = [TEST_STATES[testState] ?? 'testIdle', ['', 'run', 'bad', 'done'][testState] ?? ''];
+  else if ((state === 'online' || simIdleTimer !== null) && supported) {
+    badge = [TEST_STATES[testState] ?? 'testIdle', ['', 'run', 'bad', 'done'][testState] ?? ''];
+  }
   else if (demo) badge = ['testIdle', ''];
   else badge = ['sensorWaiting', ''];
 
@@ -557,20 +565,26 @@ function renderTest(state) {
   else delete els.testBadge.dataset.level;
   els.testStartBtn.disabled = !((state === 'online' && supported) || (demo && !port));
   els.testStopBtn.disabled = !(simTimer !== null || (port && testState === 1));
-  for (const b of els.testDirBtns) b.setAttribute('aria-pressed', String(Number(b.dataset.dir) === testDirection));
+  const ledSelected = isLedTarget(Number(els.testPin.value));
+  for (const b of els.testDirBtns) {
+    b.setAttribute('aria-pressed', String(!ledSelected && Number(b.dataset.dir) === testDirection));
+    b.disabled = ledSelected;
+  }
   els.testDuration.placeholder = t('durationHint');
 
-  // Which pin gets the PWM: the running motor and direction, or what is selected now
+  // Which pin gets the PWM: the running target and direction, or what is selected now
   const running = (simTimer !== null || testState === 1) && testOutput;
-  const motor = running ? testOutput.motor : Number(els.testPin.value);
+  const target = running ? testOutput.motor : Number(els.testPin.value);
+  const info = TEST_TARGETS[target] ?? TEST_TARGETS[1];
   const dir = running && testOutput.duty !== 0 ? Math.sign(testOutput.duty) : testDirection;
-  const pins = MOTOR_TEST_PINS[motor] ?? MOTOR_TEST_PINS[1];
-  els.pwmChartTitle.textContent = t('runTarget', {
-    motor: t(`motor${motor}`),
-    dir: dir > 0 ? '+' : '−',
-    pin: dir > 0 ? pins.in1 : pins.in2,
-    input: dir > 0 ? 'IN1' : 'IN2',
-  });
+  els.pwmChartTitle.textContent = info.pin
+    ? t('runTargetLed', { led: t(info.label), pin: info.pin })
+    : t('runTarget', {
+        motor: t(info.label),
+        dir: dir > 0 ? '+' : '−',
+        pin: dir > 0 ? info.in1 : info.in2,
+        input: dir > 0 ? 'IN1' : 'IN2',
+      });
   const parts = [];
   if (running) {
     parts.push(signedPercent(testOutput.duty));
@@ -664,17 +678,17 @@ function resetPowerData() {
 
 function readTestParams() {
   const duty = Math.max(0, Math.min(100, Number(els.testDuty.value) || 0));
+  const target = Number(els.testPin.value);
   return {
-    motor: Number(els.testPin.value),
-    duty: duty * testDirection,
+    motor: target,
+    duty: isLedTarget(target) ? duty : duty * testDirection,
     durationMs: Math.max(0, Math.round((Number(els.testDuration.value) || 0) * 1000)),
   };
 }
 
-// keepChart: a direction flip keeps the history so both directions show side by side
-function startTest(keepChart = false) {
+// The chart is never cleared here, so starts, stops and changes stay on it as history
+function startTest() {
   const p = readTestParams();
-  if (!keepChart) pwmChart.clear();
   if (port) send(`RUN,${p.motor},${p.duty},${p.durationMs}`);
   else if (demoTimer !== null) startSimTest(p);
   render();
@@ -682,19 +696,21 @@ function startTest(keepChart = false) {
 
 function stopTest() {
   if (port) send('STOP');
-  stopSimTest();
+  else if (simTimer !== null) startSimIdle(testOutput?.motor ?? 1, 0);
   render();
 }
 
-// Demo only: reports the same RUNOUT line the firmware would send
+// Demo only: reports the same RUNOUT lines the firmware would send, including the
+// idle ones (duty 0) between runs, so the chart keeps flowing like with a real board
+let simIdleTimer = null;
+
 function startSimTest(p) {
   stopSimTest();
   const start = performance.now();
   simTimer = setInterval(() => {
     const elapsed = performance.now() - start;
     if (p.durationMs > 0 && elapsed >= p.durationMs) {
-      stopSimTest();
-      testState = 3;
+      startSimIdle(p.motor, 3);
       render();
       return;
     }
@@ -703,12 +719,16 @@ function startSimTest(p) {
   }, 40);
 }
 
+function startSimIdle(motor, state) {
+  stopSimTest();
+  simIdleTimer = setInterval(() => handleLine(`RUNOUT,${state},${motor},0.0,0`), 40);
+}
+
 function stopSimTest() {
-  if (simTimer === null) return;
   clearInterval(simTimer);
+  clearInterval(simIdleTimer);
   simTimer = null;
-  testState = 0;
-  testOutput = null;
+  simIdleTimer = null;
 }
 
 function resetTestData() {
@@ -724,12 +744,16 @@ for (const b of els.testDirBtns) {
   b.addEventListener('click', () => {
     testDirection = Number(b.dataset.dir);
     // Flip a running motor straight away so the direction can be compared
-    if (simTimer !== null || (port && testState === 1)) startTest(true);
+    if (simTimer !== null || (port && testState === 1)) startTest();
     else render();
   });
 }
 
 renderTestPins();
+// A new duty takes effect right away while the motor runs (Enter or leaving the field)
+els.testDuty.addEventListener('change', () => {
+  if (simTimer !== null || (port && testState === 1)) startTest();
+});
 els.testPin.addEventListener('change', () => {
   try { localStorage.setItem(TEST_MOTOR_STORAGE_KEY, els.testPin.value); } catch { /* storage unavailable */ }
   render();

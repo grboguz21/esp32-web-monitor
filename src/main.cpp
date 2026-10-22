@@ -39,6 +39,9 @@ constexpr MotorPins MOTOR_PINS[] = {
   {18, 19, 23},   // motor 2
 };
 constexpr size_t MOTOR_COUNT = sizeof(MOTOR_PINS) / sizeof(MOTOR_PINS[0]);
+// The onboard LED can stand in for a motor to check the test without any wiring
+constexpr int LED_PIN = 2;
+constexpr unsigned LED_TARGET = MOTOR_COUNT + 1;   // RUN target number after the motors
 constexpr uint32_t PWM_FREQ_HZ = 1000;      // same as Arduino-ESP32's analogWrite() default
 constexpr uint8_t PWM_BITS = 10;
 constexpr uint32_t PWM_MAX = (1 << PWM_BITS) - 1;
@@ -46,7 +49,7 @@ constexpr uint32_t MOTOR_UPDATE_MS = 5;
 constexpr uint32_t MOTOR_WATCHDOG_MS = 1000;  // stop if the dashboard goes quiet this long
 constexpr uint32_t MOTOR_REPORT_MS = 40;      // 25 Hz
 
-constexpr const char* FIRMWARE_VERSION = "0.10.0";
+constexpr const char* FIRMWARE_VERSION = "0.11.0";
 
 // Protocol (one message per line):
 //   ESP32 -> PC : HB,<uptime_ms>               heartbeat
@@ -62,8 +65,9 @@ constexpr const char* FIRMWARE_VERSION = "0.10.0";
 //                  duty in % with the sign as direction; remaining_ms 0 when there is no duration)
 //   PC -> ESP32 : HELLO?                       request HELLO and INFO
 //                 PING                         dashboard is alive (keeps the motor allowed to run)
-//                 RUN,<motor>,<duty>,<duration_ms>
+//                 RUN,<target>,<duty>,<duration_ms>
 //                                              drive one motor: duty -100..100 %, + = IN1, - = IN2;
+//                                              target 3 is the onboard LED (brightness = |duty|);
 //                                              duration_ms 0 runs until STOP
 //                 STOP                         stop the motor
 
@@ -83,7 +87,7 @@ TaskHandle_t mainLoopTask = nullptr;
 enum class RunState : uint8_t { Idle = 0, Running = 1, Watchdog = 2, Done = 3 };
 
 struct MotorRun {
-  int motor = 0;              // index into MOTOR_PINS
+  int motor = 0;              // index into MOTOR_PINS, or MOTOR_COUNT for the LED
   float duty = 0;             // -100..100 %
   uint32_t durationMs = 0;    // 0 = until STOP
   uint32_t startMs = 0;
@@ -173,7 +177,7 @@ void handleCommand(const String& cmd) {
     float duty;
     unsigned long duration;
     if (sscanf(cmd.c_str(), "RUN,%u,%f,%lu", &motor, &duty, &duration) == 3 &&
-        motor >= 1 && motor <= MOTOR_COUNT) {
+        motor >= 1 && motor <= LED_TARGET) {
       portENTER_CRITICAL(&runMux);
       motorRun.motor = motor - 1;
       motorRun.duty = constrain(duty, -100.0f, 100.0f);
@@ -367,6 +371,8 @@ void setupMotors() {
     ledcWrite(p.in1, 0);
     ledcWrite(p.in2, 0);
   }
+  ledcAttach(LED_PIN, PWM_FREQ_HZ, PWM_BITS);
+  ledcWrite(LED_PIN, 0);
 }
 
 // duty in % (-100..100): + drives IN1, - drives IN2; enabled = ENA HIGH
@@ -400,9 +406,12 @@ void runMotors() {
     bool active = running && i == (size_t)run.motor;
     applyDuty(i, active ? run.duty : 0, active);
   }
+  bool ledActive = running && run.motor == (int)MOTOR_COUNT;
+  float ledDuty = ledActive ? fabsf(run.duty) : 0;   // the LED has no direction
+  ledcWrite(LED_PIN, (uint32_t)(ledDuty / 100.0f * PWM_MAX + 0.5f));
 
   portENTER_CRITICAL(&runMux);
-  outputDuty = running ? run.duty : 0;
+  outputDuty = !running ? 0 : ledActive ? ledDuty : run.duty;
   portEXIT_CRITICAL(&runMux);
 }
 

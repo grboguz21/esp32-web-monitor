@@ -813,4 +813,5 @@ h2[data-help] {
   cursor: pointer;
 }
 .dir-switch button[aria-pressed="true"] { background: var(--accent); color: var(--accent-text); }
+.dir-switch button:disabled { opacity: 0.4; cursor: not-allowed; }
 .dir-switch button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
