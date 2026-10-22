@@ -789,8 +789,32 @@ h2[data-help] {
 .field-hint { font-size: 0.68rem; color: var(--muted); min-height: 1em; }
 .badge[data-level="done"] { background: var(--secondary-bg); color: var(--text); }
 
-/* Oscilloscope */
-.scope-tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 12px; }
-@media (max-width: 900px) { .scope-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-.scope-plot { height: 260px; }
-.scope[data-stale] { opacity: 0.45; }
+
+/* Motor direction test */
+.run-controls { grid-template-columns: minmax(0, 1.4fr) auto minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.6fr); }
+.run-controls .test-buttons { grid-column: auto; }
+@media (max-width: 900px) {
+  .run-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .run-controls .test-buttons { grid-column: span 2; }
+}
+.dir-switch {
+  display: flex;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.dir-switch button {
+  min-width: 44px;
+  border: 0;
+  border-radius: 6px;
+  padding: 6px 12px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 1rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.dir-switch button[aria-pressed="true"] { background: var(--accent); color: var(--accent-text); }
+.dir-switch button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }

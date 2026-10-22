@@ -268,25 +268,21 @@
 
         <section class="card motor-test" id="testCard">
           <div class="card-head">
-            <h2 data-i18n="testTitle">PWM test: square wave</h2>
+            <h2 data-i18n="testTitle">Motor direction test</h2>
             <span class="badge" id="testBadge"></span>
           </div>
-          <div class="test-controls">
+          <div class="test-controls run-controls">
             <label class="field"><span data-i18n="testPin">Pin</span>
               <select id="testPin"></select>
             </label>
-            <label class="field"><span data-i18n="testFreq">PWM frequency (Hz)</span>
-              <input id="testFreq" type="number" min="10" max="40000" step="100" value="1000">
-              <small class="field-hint" id="testFreqHint"></small>
-            </label>
-            <label class="field"><span data-i18n="testHigh">High duty (%)</span>
-              <input id="testHigh" type="number" min="0" max="100" step="5" value="60">
-            </label>
-            <label class="field"><span data-i18n="testLow">Low duty (%)</span>
-              <input id="testLow" type="number" min="0" max="100" step="5" value="0">
-            </label>
-            <label class="field"><span data-i18n="testPeriod">Period (ms)</span>
-              <input id="testPeriod" type="number" min="200" step="100" value="2000">
+            <div class="field"><span data-i18n="testDirection">Direction</span>
+              <div class="dir-switch" role="group">
+                <button type="button" data-dir="1">+</button>
+                <button type="button" data-dir="-1">−</button>
+              </div>
+            </div>
+            <label class="field"><span data-i18n="testDuty">Duty (%)</span>
+              <input id="testDuty" type="number" min="0" max="100" step="5" value="40">
             </label>
             <label class="field"><span data-i18n="testDuration">Duration (s)</span>
               <input id="testDuration" type="number" min="0" step="1" value="">
@@ -296,52 +292,12 @@
               <button id="testStopBtn" class="btn btn-danger" data-i18n="testStop">Stop</button>
             </div>
           </div>
-          <p class="test-warning" data-i18n="testWarning">If the pin drives a motor input, the motor will spin.</p>
+          <p class="test-warning" data-i18n="testWarning">The selected motor will spin.</p>
           <div class="card-head">
             <h3 class="chart-title" id="pwmChartTitle"></h3>
             <span class="chart-now" id="testDutyNow"></span>
           </div>
           <div class="chart" id="pwmChart"></div>
-        </section>
-        <section class="card scope" id="scopeCard">
-          <div class="card-head">
-            <h2 data-i18n="scopeTitle">Oscilloscope</h2>
-            <span class="badge" id="scopeBadge"></span>
-          </div>
-          <div class="test-controls">
-            <label class="field"><span data-i18n="scopeMode">Mode</span>
-              <select id="scopeMode">
-                <option value="D" data-i18n="scopeDigital">Digital</option>
-                <option value="A" data-i18n="scopeAnalog">Analog</option>
-              </select>
-            </label>
-            <label class="field"><span data-i18n="testPin">Pin</span>
-              <select id="scopePin"></select>
-            </label>
-            <label class="field"><span data-i18n="scopeRate">Sample rate</span>
-              <select id="scopeRate"></select>
-              <small class="field-hint" data-i18n="scopeRateHint">at least 10× the signal frequency</small>
-            </label>
-            <label class="field"><span data-i18n="scopeSamples">Samples</span>
-              <select id="scopeSamples">
-                <option value="250">250</option>
-                <option value="500">500</option>
-                <option value="1000" selected>1000</option>
-              </select>
-            </label>
-            <div class="test-buttons">
-              <button id="scopeRunBtn" class="btn"></button>
-              <button id="scopeSingleBtn" class="btn btn-secondary" data-i18n="scopeSingle">Single</button>
-            </div>
-          </div>
-          <p class="test-warning" data-i18n="scopeHint">Digital reads any pin directly. Analog works on D32–D35, VP and VN.</p>
-          <div class="tiles scope-tiles">
-            <div class="tile"><div class="tile-label" data-i18n="scopeFreq">Frequency</div><div class="tile-value" id="scopeM1">—</div></div>
-            <div class="tile"><div class="tile-label" id="scopeL2"></div><div class="tile-value" id="scopeM2">—</div></div>
-            <div class="tile"><div class="tile-label" data-i18n="scopeAvg">Average</div><div class="tile-value" id="scopeM3">—</div></div>
-            <div class="tile"><div class="tile-label" data-i18n="scopeSampling">Sampling</div><div class="tile-value" id="scopeM4">—</div><div class="tile-sub" id="scopeM4Sub">—</div></div>
-          </div>
-          <div class="chart scope-plot" id="scopePlot"></div>
         </section>
       </div>
 

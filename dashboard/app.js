@@ -44,28 +44,11 @@ const els = {
   testCard: document.getElementById('testCard'),
   testBadge: document.getElementById('testBadge'),
   testPin: document.getElementById('testPin'),
-  testFreq: document.getElementById('testFreq'),
-  testFreqHint: document.getElementById('testFreqHint'),
+  testDirBtns: document.querySelectorAll('[data-dir]'),
+  testDuty: document.getElementById('testDuty'),
   testDuration: document.getElementById('testDuration'),
-  scopeCard: document.getElementById('scopeCard'),
-  scopeBadge: document.getElementById('scopeBadge'),
-  scopeMode: document.getElementById('scopeMode'),
-  scopePin: document.getElementById('scopePin'),
-  scopeRate: document.getElementById('scopeRate'),
-  scopeSamples: document.getElementById('scopeSamples'),
-  scopeRunBtn: document.getElementById('scopeRunBtn'),
-  scopeSingleBtn: document.getElementById('scopeSingleBtn'),
-  scopeL2: document.getElementById('scopeL2'),
-  scopeM1: document.getElementById('scopeM1'),
-  scopeM2: document.getElementById('scopeM2'),
-  scopeM3: document.getElementById('scopeM3'),
-  scopeM4: document.getElementById('scopeM4'),
-  scopeM4Sub: document.getElementById('scopeM4Sub'),
   testDutyNow: document.getElementById('testDutyNow'),
   pwmChartTitle: document.getElementById('pwmChartTitle'),
-  testHigh: document.getElementById('testHigh'),
-  testLow: document.getElementById('testLow'),
-  testPeriod: document.getElementById('testPeriod'),
   testStartBtn: document.getElementById('testStartBtn'),
   testStopBtn: document.getElementById('testStopBtn'),
   log: document.getElementById('log'),
@@ -143,29 +126,22 @@ const voltageChart = new LiveChart(document.getElementById('voltageChart'), {
   labels: chartLabels,
 });
 
-// PWM test: a square wave of duty on one GPIO, reported back as PWMOUT
+// Motor direction test: one motor at a signed duty, reported back as RUNOUT
 const TEST_STATES = ['testIdle', 'testRunning', 'testWatchdog', 'testDone'];
-const PWM_MIN_FREQ = 10;
-const PWM_MAX_FREQ = 40000;
-// Arduino-ESP32's analogWrite() default; replaced by what the firmware reports in PWMCFG
-let pwmDefaultFreq = 1000;
-const TEST_PIN_STORAGE_KEY = 'esp32-dashboard-test-pin';
-// Output-safe pins the firmware accepts, with their board label and role in this project
-const TEST_PINS = [
-  [2, 'D2', 'roleLed'], [4, 'D4'], [5, 'D5'], [12, 'D12'], [13, 'D13'], [14, 'D14'], [15, 'D15'],
-  [16, 'RX2'], [17, 'TX2'], [18, 'D18', 'roleM2Ena'], [19, 'D19', 'roleM2In1'], [23, 'D23', 'roleM2In2'],
-  [25, 'D25', 'roleM1Ena'], [26, 'D26', 'roleM1In1'], [27, 'D27', 'roleM1In2'], [32, 'D32'], [33, 'D33'],
-];
-let testState = null;    // null until the firmware reports PWMOUT, then 0 idle / 1 running / 2 watchdog
-let testOutput = null;   // { pin, duty, freq, remainingMs }
-let simTimer = null;     // simulated output while demo data is on and no board is connected
+const TEST_MOTOR_STORAGE_KEY = 'esp32-dashboard-test-motor';
+// L298N inputs per motor (board labels): + direction drives IN1, - direction drives IN2
+const MOTOR_TEST_PINS = { 1: { in1: 'D26', in2: 'D27' }, 2: { in1: 'D19', in2: 'D23' } };
+let testDirection = 1;   // +1 or -1
+let testState = null;    // null until the firmware reports RUNOUT, then 0 idle / 1 running / 2 watchdog / 3 done
+let testOutput = null;   // { motor, duty, remainingMs }
+let simTimer = null;     // simulated run while demo data is on and no board is connected
 
-const pinLabel = (gpio) => TEST_PINS.find(([g]) => g === gpio)?.[1] ?? `GPIO${gpio}`;
+const signedPercent = (d) => `${d > 0 ? '+' : d < 0 ? '−' : ''}${Math.abs(d).toFixed(0)} %`;
 
 const pwmChart = new LiveChart(document.getElementById('pwmChart'), {
   series: [{ key: 'pwm', label: () => t('tDuty'), short: '', color: '--accent' }],
-  format: (d) => `${d.toFixed(0)} %`,
-  range: [0, 100],
+  format: signedPercent,
+  range: [-100, 100],
   windowMs: 20000,
   labels: chartLabels,
 });
@@ -173,39 +149,14 @@ const pwmChart = new LiveChart(document.getElementById('pwmChart'), {
 function renderTestPins() {
   let selected = els.testPin.value;
   if (!selected) {
-    try { selected = localStorage.getItem(TEST_PIN_STORAGE_KEY); } catch { /* storage unavailable */ }
+    try { selected = localStorage.getItem(TEST_MOTOR_STORAGE_KEY); } catch { /* storage unavailable */ }
   }
   els.testPin.innerHTML = '';
-  for (const [gpio, label, role] of TEST_PINS) {
-    const text = `${label} (GPIO${gpio})` + (role ? ` · ${t(role)}` : '');
-    els.testPin.add(new Option(text, String(gpio)));
+  for (const m of MOTORS) {
+    const pins = MOTOR_TEST_PINS[m];
+    els.testPin.add(new Option(`${t(`motor${m}`)} · ${pins.in1} / ${pins.in2}`, String(m)));
   }
-  els.testPin.value = TEST_PINS.some(([g]) => String(g) === selected) ? selected : '2';
-}
-
-// Oscilloscope: one snapshot at a time, re-requested while Run is on
-const SCOPE_PINS = {
-  D: [...TEST_PINS.map(([g, label]) => [g, label]), [34, 'D34'], [35, 'D35'], [36, 'VP'], [39, 'VN']],
-  A: [[32, 'D32'], [33, 'D33'], [34, 'D34'], [35, 'D35'], [36, 'VP'], [39, 'VN']],
-};
-const SCOPE_RATES = { D: [10000, 50000, 100000, 200000], A: [1000, 2000, 5000] };
-const SCOPE_DEFAULT_RATE = { D: 100000, A: 5000 };
-let scopeRunning = false;   // keep capturing
-let scopeWaiting = false;   // a snapshot request is in flight
-let scopeTimeout = null;
-let scopeData = null;       // { digital, pin, rate, triggered, values }
-let scopeError = null;
-
-const scopePlot = new ScopePlot(document.getElementById('scopePlot'), {
-  labels: {
-    empty: () => t('scopeEmpty'),
-    value: (v, digital) => (digital ? (v ? '1 · 3.3 V' : '0 · 0 V') : `${(v / 1000).toFixed(2)} V`),
-  },
-});
-
-function formatHz(hz) {
-  if (hz >= 1000) return `${(hz / 1000).toFixed(hz >= 10000 ? 1 : 2)} kHz`;
-  return `${hz.toFixed(hz >= 100 ? 0 : 1)} Hz`;
+  els.testPin.value = selected in MOTOR_TEST_PINS ? selected : '1';
 }
 
 let uptimeMs = null;
@@ -325,8 +276,6 @@ async function closePort() {
   health = null;
   resetPowerData();
   resetTestData();
-  scopeRunning = false;
-  scopeWaiting = false;
   uptimeMs = null;
   lastBeatAt = 0;
   log(t('log.closed'));
@@ -418,21 +367,10 @@ function handleLine(line) {
     }
   }
 
-  if (type === 'SCOPE') {
-    handleScope(fields);
-    return;
-  }
-
-  if (type === 'PWMCFG' && fields.length === 2) {
-    pwmDefaultFreq = Number(fields[0]);
-    els.testFreq.value = pwmDefaultFreq;   // every connect starts from the board's default
-    return;
-  }
-
-  if (type === 'PWMOUT' && fields.length === 5) {
-    const [state, pin, duty, freq, remainingMs] = fields.map(Number);
+  if (type === 'RUNOUT' && fields.length === 4) {
+    const [state, motor, duty, remainingMs] = fields.map(Number);
     testState = state;
-    testOutput = { pin, duty, freq, remainingMs };
+    testOutput = { motor, duty, remainingMs };
     pwmChart.push('pwm', duty);
     return;
   }
@@ -479,7 +417,6 @@ function render() {
   renderHealth(state);
   renderPower(state);
   renderTest(state);
-  renderScope(state);
 }
 
 function formatBytes(n) {
@@ -620,50 +557,26 @@ function renderTest(state) {
   else delete els.testBadge.dataset.level;
   els.testStartBtn.disabled = !((state === 'online' && supported) || (demo && !port));
   els.testStopBtn.disabled = !(simTimer !== null || (port && testState === 1));
+  for (const b of els.testDirBtns) b.setAttribute('aria-pressed', String(Number(b.dataset.dir) === testDirection));
+  els.testDuration.placeholder = t('durationHint');
 
-  const running = simTimer !== null || testState === 1;
-  const pin = running && testOutput?.pin >= 0 ? testOutput.pin : Number(els.testPin.value);
-  els.pwmChartTitle.textContent = t('pwmChartTitle', { pin: pinLabel(pin) });
+  // Which pin gets the PWM: the running motor and direction, or what is selected now
+  const running = (simTimer !== null || testState === 1) && testOutput;
+  const motor = running ? testOutput.motor : Number(els.testPin.value);
+  const dir = running && testOutput.duty !== 0 ? Math.sign(testOutput.duty) : testDirection;
+  const pins = MOTOR_TEST_PINS[motor] ?? MOTOR_TEST_PINS[1];
+  els.pwmChartTitle.textContent = t('runTarget', {
+    motor: t(`motor${motor}`),
+    dir: dir > 0 ? '+' : '−',
+    pin: dir > 0 ? pins.in1 : pins.in2,
+    input: dir > 0 ? 'IN1' : 'IN2',
+  });
   const parts = [];
-  if (running && testOutput) {
-    parts.push(`${testOutput.duty.toFixed(0)} %`, `${testOutput.freq} Hz`);
+  if (running) {
+    parts.push(signedPercent(testOutput.duty));
     if (testOutput.remainingMs > 0) parts.push(t('remaining', { s: (testOutput.remainingMs / 1000).toFixed(1) }));
   }
   els.testDutyNow.textContent = parts.join(' · ');
-
-  els.testDuration.placeholder = t('durationHint');
-  const freq = Number(els.testFreq.value);
-  els.testFreqHint.textContent = freq >= PWM_MIN_FREQ
-    ? t('freqHint', { p: (1000 / freq).toFixed(freq >= 1000 ? 2 : 1), f: pwmDefaultFreq })
-    : '';
-}
-
-function renderScope(state) {
-  const demo = demoTimer !== null;
-  const live = state === 'online' || (demo && !port);
-  els.scopeCard.toggleAttribute('data-stale', !live && !scopeData);
-  const badge = scopeError ? ['scopeError', 'bad'] : scopeRunning ? ['scopeRunning', 'run'] : ['scopeIdle', ''];
-  els.scopeBadge.textContent = t(badge[0]);
-  if (badge[1]) els.scopeBadge.dataset.level = badge[1];
-  else delete els.scopeBadge.dataset.level;
-  els.scopeRunBtn.textContent = scopeRunning ? t('scopeStop') : t('scopeRun');
-  els.scopeRunBtn.disabled = !live && !scopeRunning;
-  els.scopeSingleBtn.disabled = !live || scopeRunning;
-
-  const digital = els.scopeMode.value === 'D';
-  els.scopeL2.textContent = digital ? t('scopeDuty') : t('scopeMinMax');
-  const m = scopeData ? measureScope(scopeData) : null;
-  els.scopeM1.textContent = m?.freq ? formatHz(m.freq) : '—';
-  els.scopeM2.textContent = !m ? '—' : scopeData.digital
-    ? `${(m.duty * 100).toFixed(1)} %`
-    : `${(m.min / 1000).toFixed(2)} / ${(m.max / 1000).toFixed(2)} V`;
-  els.scopeM3.textContent = m ? `${(m.avgMv / 1000).toFixed(2)} V` : '—';
-  els.scopeM4.textContent = scopeData ? formatHz(scopeData.rate) : '—';
-  els.scopeM4Sub.textContent = scopeData
-    ? `${t('scopeWindow', { w: ((scopeData.values.length - 1) / scopeData.rate * 1000).toFixed(2) })} · ` +
-      t(scopeData.triggered ? 'scopeTriggered' : 'scopeFreeRun')
-    : (scopeError ? t(scopeError === 'busy' ? 'scopeErrBusy' : 'scopeErrPin') : '—');
-  scopePlot.draw();
 }
 
 function log(message) {
@@ -747,139 +660,22 @@ function resetPowerData() {
   voltageChart.clear();
 }
 
-// ---------- Oscilloscope ----------
-
-function renderScopeOptions() {
-  const mode = els.scopeMode.value;
-  const keepPin = els.scopePin.value;
-  els.scopePin.innerHTML = '';
-  for (const [gpio, label] of SCOPE_PINS[mode]) els.scopePin.add(new Option(`${label} (GPIO${gpio})`, String(gpio)));
-  els.scopePin.value = SCOPE_PINS[mode].some(([g]) => String(g) === keepPin) ? keepPin : String(SCOPE_PINS[mode][0][0]);
-  els.scopeRate.innerHTML = '';
-  for (const r of SCOPE_RATES[mode]) els.scopeRate.add(new Option(formatHz(r), String(r)));
-  els.scopeRate.value = String(SCOPE_DEFAULT_RATE[mode]);
-}
-
-function requestScope() {
-  if (scopeWaiting) return;
-  const mode = els.scopeMode.value;
-  const pin = Number(els.scopePin.value);
-  const rate = Number(els.scopeRate.value);
-  const samples = Number(els.scopeSamples.value);
-  scopeWaiting = true;
-  clearTimeout(scopeTimeout);
-  // A lost reply must not stall Run forever
-  scopeTimeout = setTimeout(() => { scopeWaiting = false; if (scopeRunning) requestScope(); }, 2000);
-  if (port) send(`SCOPE,${mode},${pin},${rate},${samples}`);
-  else if (demoTimer !== null) setTimeout(() => handleScope(simulateScope(mode, pin, rate, samples)), 60);
-  else scopeWaiting = false;
-}
-
-function handleScope(fields) {
-  scopeWaiting = false;
-  clearTimeout(scopeTimeout);
-  if (fields[0] === 'E') {
-    scopeError = fields[1];
-    scopeRunning = false;
-    render();
-    return;
-  }
-  if (fields.length !== 6) return;
-  const [mode, pin, rate, count, triggered, data] = fields;
-  const digital = mode === 'D';
-  const values = [];
-  if (digital) {
-    for (const c of data) {
-      const nibble = parseInt(c, 16);
-      for (let b = 3; b >= 0; b--) values.push((nibble >> b) & 1);
-    }
-  } else {
-    for (let i = 0; i + 3 <= data.length; i += 3) values.push(parseInt(data.slice(i, i + 3), 16));
-  }
-  if (values.length !== Number(count)) return;
-  scopeError = null;
-  scopeData = { digital, pin: Number(pin), rate: Number(rate), triggered: triggered === '1', values };
-  scopePlot.setData(scopeData);
-  render();
-  if (scopeRunning) setTimeout(requestScope, 150);
-}
-
-// Frequency from rising crossings, duty or min/max, and the average level
-function measureScope({ digital, rate, values }) {
-  const mv = digital ? values.map((v) => v * 3300) : values;
-  const min = Math.min(...mv);
-  const max = Math.max(...mv);
-  const avgMv = mv.reduce((a, b) => a + b, 0) / mv.length;
-  const mid = (min + max) / 2;
-  const hysteresis = digital ? 0 : (max - min) * 0.1;
-  const rises = [];
-  let high = mv[0] > mid;
-  for (let i = 1; i < mv.length; i++) {
-    if (!high && mv[i] > mid + hysteresis) { high = true; rises.push(i); }
-    else if (high && mv[i] < mid - hysteresis) high = false;
-  }
-  let freq = null;
-  let duty = digital ? values.reduce((a, b) => a + b, 0) / values.length : null;
-  if (rises.length >= 2 && max - min > 100) {
-    const first = rises[0];
-    const last = rises[rises.length - 1];
-    freq = (rate * (rises.length - 1)) / (last - first);
-    if (digital) duty = values.slice(first, last).reduce((a, b) => a + b, 0) / (last - first);
-  }
-  return { freq, duty, min, max, avgMv };
-}
-
-// Demo only: shows the simulated PWM test when it runs on that pin, else a 50 % wave
-// (1 kHz digital, 100 Hz analog, so it suits each mode's sample rates)
-function simulateScope(mode, pin, rate, samples) {
-  const testOn = simTimer !== null && testOutput?.pin === pin;
-  const freq = testOn ? testOutput.freq : mode === 'A' ? 100 : 1000;
-  const duty = testOn ? testOutput.duty / 100 : 0.5;
-  const digits = [];
-  let nibble = 0;
-  let rc = 0;
-  for (let i = 0; i < samples; i++) {
-    const level = ((i / rate) * freq) % 1 < duty ? 1 : 0;
-    if (mode === 'D') {
-      nibble = (nibble << 1) | level;
-      if (i % 4 === 3) { digits.push(nibble.toString(16).toUpperCase()); nibble = 0; }
-    } else {
-      rc += (level * 3300 - rc) * 0.35;   // the pin's edges softened a little, plus ADC noise
-      const v = Math.max(0, Math.min(4095, Math.round(rc + (Math.random() - 0.5) * 40)));
-      digits.push(v.toString(16).toUpperCase().padStart(3, '0'));
-    }
-  }
-  return [mode, String(pin), String(rate), String(samples), '1', digits.join('')];
-}
-
-els.scopeMode.addEventListener('change', () => { renderScopeOptions(); render(); });
-els.scopeRunBtn.addEventListener('click', () => {
-  scopeRunning = !scopeRunning;
-  scopeError = null;
-  if (scopeRunning) requestScope();
-  render();
-});
-els.scopeSingleBtn.addEventListener('click', () => { scopeError = null; requestScope(); });
-renderScopeOptions();
-
-// ---------- Motor test ----------
+// ---------- Motor direction test ----------
 
 function readTestParams() {
-  const clampDuty = (v) => Math.max(0, Math.min(100, Number(v) || 0));
+  const duty = Math.max(0, Math.min(100, Number(els.testDuty.value) || 0));
   return {
-    pin: Number(els.testPin.value),
-    high: clampDuty(els.testHigh.value),
-    low: clampDuty(els.testLow.value),
-    period: Math.max(200, Number(els.testPeriod.value) || 2000),
-    freq: Math.max(PWM_MIN_FREQ, Math.min(PWM_MAX_FREQ, Math.round(Number(els.testFreq.value)) || pwmDefaultFreq)),
+    motor: Number(els.testPin.value),
+    duty: duty * testDirection,
     durationMs: Math.max(0, Math.round((Number(els.testDuration.value) || 0) * 1000)),
   };
 }
 
-function startTest() {
+// keepChart: a direction flip keeps the history so both directions show side by side
+function startTest(keepChart = false) {
   const p = readTestParams();
-  pwmChart.clear();
-  if (port) send(`PWM,${p.pin},${p.high},${p.low},${p.period},${p.freq},${p.durationMs}`);
+  if (!keepChart) pwmChart.clear();
+  if (port) send(`RUN,${p.motor},${p.duty},${p.durationMs}`);
   else if (demoTimer !== null) startSimTest(p);
   render();
 }
@@ -890,7 +686,7 @@ function stopTest() {
   render();
 }
 
-// Demo only: reports the same PWMOUT line the firmware would send
+// Demo only: reports the same RUNOUT line the firmware would send
 function startSimTest(p) {
   stopSimTest();
   const start = performance.now();
@@ -902,9 +698,8 @@ function startSimTest(p) {
       render();
       return;
     }
-    const highHalf = elapsed % p.period < p.period / 2;
     const remaining = p.durationMs > 0 ? Math.round(p.durationMs - elapsed) : 0;
-    handleLine(`PWMOUT,1,${p.pin},${(highHalf ? p.high : p.low).toFixed(1)},${p.freq},${remaining}`);
+    handleLine(`RUNOUT,1,${p.motor},${p.duty.toFixed(1)},${remaining}`);
   }, 40);
 }
 
@@ -922,18 +717,25 @@ function resetTestData() {
   pwmChart.clear();
 }
 
-els.testStartBtn.addEventListener('click', startTest);
+els.testStartBtn.addEventListener('click', () => startTest());
 els.testStopBtn.addEventListener('click', stopTest);
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') stopTest(); });
+for (const b of els.testDirBtns) {
+  b.addEventListener('click', () => {
+    testDirection = Number(b.dataset.dir);
+    // Flip a running motor straight away so the direction can be compared
+    if (simTimer !== null || (port && testState === 1)) startTest(true);
+    else render();
+  });
+}
 
 renderTestPins();
-els.testFreq.addEventListener('input', render);
 els.testPin.addEventListener('change', () => {
-  try { localStorage.setItem(TEST_PIN_STORAGE_KEY, els.testPin.value); } catch { /* storage unavailable */ }
+  try { localStorage.setItem(TEST_MOTOR_STORAGE_KEY, els.testPin.value); } catch { /* storage unavailable */ }
   render();
 });
 
-// Tells the firmware the page is alive; without it the PWM test stops after 1 s
+// Tells the firmware the page is alive; without it the motor stops after 1 s
 setInterval(() => { if (port) send('PING'); }, 200);
 
 document.querySelectorAll('[data-pfield="demo"]').forEach((b) => b.addEventListener('click', () => {
@@ -1010,7 +812,6 @@ I18N.onChange(() => {
   currentChart.renderLegend();
   voltageChart.renderLegend();
   renderTestPins();
-  renderScopeOptions();
   render();
   if ('serial' in navigator) refreshPorts();
 });

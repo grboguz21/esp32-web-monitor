@@ -2,8 +2,6 @@
 #include <Wire.h>
 #include <Adafruit_INA219.h>
 #include <esp_system.h>
-#include <driver/gpio.h>
-#include <soc/gpio_reg.h>
 
 constexpr uint32_t SERIAL_BAUD = 115200;
 constexpr uint32_t HEARTBEAT_INTERVAL_MS = 500;
@@ -28,9 +26,9 @@ constexpr uint32_t POWER_REPORT_MS = 100;
 constexpr uint32_t POWER_ABSENT_REPORT_MS = 1000;
 constexpr uint32_t SENSOR_PROBE_MS = 2000;
 
-// One L298N per motor. PWM goes to IN1/IN2 with ENA held HIGH, so in the off phase the
-// low-side transistors carry the motor current (slow decay) instead of the diodes.
-// ENA LOW lets the motor coast; that is the stopped state.
+// One L298N per motor. PWM goes to IN1 (+ direction) or IN2 (- direction) with ENA held
+// HIGH, so in the off phase the low-side transistors carry the motor current (slow decay)
+// instead of the diodes. ENA LOW lets the motor coast; that is the stopped state.
 struct MotorPins {
   int ena;
   int in1;
@@ -41,32 +39,14 @@ constexpr MotorPins MOTOR_PINS[] = {
   {18, 19, 23},   // motor 2
 };
 constexpr size_t MOTOR_COUNT = sizeof(MOTOR_PINS) / sizeof(MOTOR_PINS[0]);
-
-// PWM test: a square wave of duty on any of these output-safe pins
-// (not UART0, not the I2C bus, not input-only or flash pins)
-constexpr int PWM_TEST_PINS[] = {2, 4, 5, 12, 13, 14, 15, 16, 17, 18, 19, 23, 25, 26, 27, 32, 33};
-constexpr uint32_t PWM_DEFAULT_FREQ_HZ = 1000;   // same as Arduino-ESP32's analogWrite() default
-constexpr uint32_t PWM_MIN_FREQ_HZ = 10;
-constexpr uint32_t PWM_MAX_FREQ_HZ = 40000;      // 10-bit LEDC tops out near 78 kHz
+constexpr uint32_t PWM_FREQ_HZ = 1000;      // same as Arduino-ESP32's analogWrite() default
 constexpr uint8_t PWM_BITS = 10;
 constexpr uint32_t PWM_MAX = (1 << PWM_BITS) - 1;
-constexpr uint32_t PWM_UPDATE_MS = 5;
-constexpr uint32_t PWM_WATCHDOG_MS = 1000;   // stop if the dashboard goes quiet this long
-constexpr uint32_t PWM_REPORT_MS = 40;       // 25 Hz
+constexpr uint32_t MOTOR_UPDATE_MS = 5;
+constexpr uint32_t MOTOR_WATCHDOG_MS = 1000;  // stop if the dashboard goes quiet this long
+constexpr uint32_t MOTOR_REPORT_MS = 40;      // 25 Hz
 
-// Oscilloscope snapshots, captured on core 0 when the dashboard asks for one
-constexpr int SCOPE_DIGITAL_PINS[] = {2, 4, 5, 12, 13, 14, 15, 16, 17, 18, 19, 23, 25, 26, 27,
-                                      32, 33, 34, 35, 36, 39};
-constexpr int SCOPE_ANALOG_PINS[] = {32, 33, 34, 35, 36, 39};   // ADC1 only
-constexpr uint32_t SCOPE_MAX_SAMPLES = 1000;
-constexpr uint32_t SCOPE_MIN_HZ = 100;
-constexpr uint32_t SCOPE_DIGITAL_MAX_HZ = 200000;
-constexpr uint32_t SCOPE_ANALOG_MAX_HZ = 5000;       // analogReadMilliVolts() is the bottleneck
-constexpr uint32_t SCOPE_TRIGGER_TIMEOUT_MS = 50;
-constexpr uint16_t SCOPE_ANALOG_TRIGGER_MV = 1650;
-constexpr size_t SERIAL_TX_BUFFER = 4096;            // a snapshot line is up to ~3 KB
-
-constexpr const char* FIRMWARE_VERSION = "0.9.0";
+constexpr const char* FIRMWARE_VERSION = "0.10.0";
 
 // Protocol (one message per line):
 //   ESP32 -> PC : HB,<uptime_ms>               heartbeat
@@ -77,22 +57,15 @@ constexpr const char* FIRMWARE_VERSION = "0.9.0";
 //                 POWER,<motor>,<voltage_V>,<current_mA>,<power_mW>,<min_voltage_V>,<max_current_mA>
 //                 (motor is 1 or 2; averages and extremes over the last report window)
 //                 POWER,<motor>,NA             no INA219 found for that motor
-//                 PWMCFG,<default_freq_hz>,<resolution_bits>
-//                 PWMOUT,<state>,<pin>,<duty>,<freq_hz>,<remaining_ms>
+//                 RUNOUT,<state>,<motor>,<duty>,<remaining_ms>
 //                 (state 0 idle, 1 running, 2 stopped by the watchdog, 3 duration finished;
-//                  duty in % on that pin; remaining_ms is 0 when the test has no duration)
-//                 SCOPE,<D|A>,<pin>,<rate_hz>,<samples>,<triggered>,<data>
-//                 (digital: one hex digit per 4 samples, first sample in the top bit;
-//                  analog: three hex digits per sample in mV; rate_hz is the measured rate)
-//                 SCOPE,E,<pin|busy>             capture refused
+//                  duty in % with the sign as direction; remaining_ms 0 when there is no duration)
 //   PC -> ESP32 : HELLO?                       request HELLO and INFO
-//                 PING                         dashboard is alive (keeps the PWM test allowed)
-//                 PWM,<pin>,<high>,<low>,<period_ms>,<freq_hz>,<duration_ms>
-//                                              square wave of duty (0..100 %) on a GPIO;
+//                 PING                         dashboard is alive (keeps the motor allowed to run)
+//                 RUN,<motor>,<duty>,<duration_ms>
+//                                              drive one motor: duty -100..100 %, + = IN1, - = IN2;
 //                                              duration_ms 0 runs until STOP
-//                 STOP                         stop the PWM test
-//                 SCOPE,<D|A>,<pin>,<rate_hz>,<samples>
-//                                              capture one oscilloscope snapshot
+//                 STOP                         stop the motor
 
 struct LoopStats {
   uint32_t lastStartUs = 0;
@@ -107,24 +80,21 @@ portMUX_TYPE loopStatsMux = portMUX_INITIALIZER_UNLOCKED;
 
 TaskHandle_t mainLoopTask = nullptr;
 
-enum class TestState : uint8_t { Idle = 0, Running = 1, Watchdog = 2, Done = 3 };
+enum class RunState : uint8_t { Idle = 0, Running = 1, Watchdog = 2, Done = 3 };
 
-struct PwmTest {
-  int pin = -1;
-  float dutyHigh = 0;
-  float dutyLow = 0;
-  uint32_t periodMs = 2000;
-  uint32_t freqHz = PWM_DEFAULT_FREQ_HZ;
-  uint32_t durationMs = 0;   // 0 = until STOP
+struct MotorRun {
+  int motor = 0;              // index into MOTOR_PINS
+  float duty = 0;             // -100..100 %
+  uint32_t durationMs = 0;    // 0 = until STOP
   uint32_t startMs = 0;
 };
 
 // Shared between the telemetry task (core 0: commands, reports) and loop() (core 1: output)
-portMUX_TYPE testMux = portMUX_INITIALIZER_UNLOCKED;
-PwmTest pwmTest;
-TestState testState = TestState::Idle;
+portMUX_TYPE runMux = portMUX_INITIALIZER_UNLOCKED;
+MotorRun motorRun;
+RunState runState = RunState::Idle;
 uint32_t lastPingMs = 0;
-float outputDuty = 0;   // duty currently on the test pin
+float outputDuty = 0;   // duty currently driven, signed
 
 struct PowerWindow {
   float sumVoltage = 0;
@@ -151,11 +121,6 @@ PowerChannel powerChannels[POWER_CHANNELS] = {
   PowerChannel(POWER_SENSOR_ADDRESSES[0]),
   PowerChannel(POWER_SENSOR_ADDRESSES[1]),
 };
-
-bool isPwmTestPin(int pin) {
-  for (int p : PWM_TEST_PINS) if (p == pin) return true;
-  return false;
-}
 
 const char* resetReasonName(esp_reset_reason_t reason) {
   switch (reason) {
@@ -191,136 +156,32 @@ void printInfo() {
                 resetReasonName(esp_reset_reason()));
 }
 
-template <size_t N>
-bool pinInList(const int (&list)[N], int pin) {
-  for (int p : list) if (p == pin) return true;
-  return false;
-}
-
-uint16_t scopeBuffer[SCOPE_MAX_SAMPLES];
-
-inline uint16_t readDigitalLevel(int pin) {
-  return pin < 32 ? (REG_READ(GPIO_IN_REG) >> pin) & 1 : (REG_READ(GPIO_IN1_REG) >> (pin - 32)) & 1;
-}
-
-// Blocks the telemetry task for the capture (at most ~0.25 s at the slowest analog rate)
-void captureScope(char mode, int pin, uint32_t rateHz, uint32_t samples) {
-  bool digital = mode == 'D';
-  if (!(digital ? pinInList(SCOPE_DIGITAL_PINS, pin) : pinInList(SCOPE_ANALOG_PINS, pin))) {
-    Serial.printf("SCOPE,E,pin\n");
-    return;
-  }
-  portENTER_CRITICAL(&testMux);
-  bool pinBusy = !digital && testState == TestState::Running && pwmTest.pin == pin;
-  portEXIT_CRITICAL(&testMux);
-  if (pinBusy) {   // analogRead would take the pin away from the PWM output
-    Serial.printf("SCOPE,E,busy\n");
-    return;
-  }
-
-  samples = constrain(samples, 16, SCOPE_MAX_SAMPLES) & ~3u;
-  rateHz = constrain(rateHz, SCOPE_MIN_HZ, digital ? SCOPE_DIGITAL_MAX_HZ : SCOPE_ANALOG_MAX_HZ);
-  if (digital) gpio_input_enable((gpio_num_t)pin);   // lets us read back a pin that is an output
-  auto read = [&]() -> uint16_t { return digital ? readDigitalLevel(pin) : analogReadMilliVolts(pin); };
-
-  // Start on a rising crossing so repeated snapshots line up on screen
-  uint16_t threshold = digital ? 1 : SCOPE_ANALOG_TRIGGER_MV;
-  bool triggered = false;
-  uint32_t waitStart = millis();
-  uint16_t prev = read();
-  while (millis() - waitStart < SCOPE_TRIGGER_TIMEOUT_MS) {
-    uint16_t v = read();
-    if (prev < threshold && v >= threshold) {
-      triggered = true;
-      break;
-    }
-    prev = v;
-  }
-
-  // Pace samples on the CPU cycle counter; if reads are slower than the period, the
-  // measured rate below reports how fast we really went
-  uint32_t cyclesPerSecond = ESP.getCpuFreqMHz() * 1000000UL;
-  uint32_t period = cyclesPerSecond / rateHz;
-  uint32_t start = ESP.getCycleCount();
-  uint32_t next = start;
-  for (uint32_t i = 0; i < samples; i++) {
-    while ((int32_t)(ESP.getCycleCount() - next) < 0) {}
-    scopeBuffer[i] = read();
-    next += period;
-  }
-  uint32_t elapsed = ESP.getCycleCount() - start;
-  float actualHz = elapsed ? (float)(samples - 1) * cyclesPerSecond / elapsed : rateHz;
-
-  Serial.printf("SCOPE,%c,%d,%.0f,%lu,%u,", mode, pin, actualHz, (unsigned long)samples, triggered ? 1 : 0);
-  static const char HEX_DIGITS[] = "0123456789ABCDEF";
-  char chunk[96];
-  size_t n = 0;
-  auto put = [&](char c) {
-    chunk[n++] = c;
-    if (n == sizeof(chunk)) {
-      Serial.write((const uint8_t*)chunk, n);
-      n = 0;
-    }
-  };
-  if (digital) {
-    for (uint32_t i = 0; i < samples; i += 4) {
-      put(HEX_DIGITS[(scopeBuffer[i] << 3) | (scopeBuffer[i + 1] << 2) |
-                     (scopeBuffer[i + 2] << 1) | scopeBuffer[i + 3]]);
-    }
-  } else {
-    for (uint32_t i = 0; i < samples; i++) {
-      uint16_t mv = min<uint16_t>(scopeBuffer[i], 0xFFF);
-      put(HEX_DIGITS[(mv >> 8) & 0xF]);
-      put(HEX_DIGITS[(mv >> 4) & 0xF]);
-      put(HEX_DIGITS[mv & 0xF]);
-    }
-  }
-  put('\n');
-  Serial.write((const uint8_t*)chunk, n);
-}
-
-void printPwmConfig() {
-  Serial.printf("PWMCFG,%lu,%u\n", (unsigned long)PWM_DEFAULT_FREQ_HZ, (unsigned)PWM_BITS);
-}
-
 void handleCommand(const String& cmd) {
   if (cmd == "HELLO?") {
     printHello();
     printInfo();
-    printPwmConfig();
   } else if (cmd == "PING") {
-    portENTER_CRITICAL(&testMux);
+    portENTER_CRITICAL(&runMux);
     lastPingMs = millis();
-    portEXIT_CRITICAL(&testMux);
+    portEXIT_CRITICAL(&runMux);
   } else if (cmd == "STOP") {
-    portENTER_CRITICAL(&testMux);
-    testState = TestState::Idle;
-    portEXIT_CRITICAL(&testMux);
-  } else if (cmd.startsWith("SCOPE,")) {
-    char mode;
-    int pin;
-    unsigned long rate, samples;
-    if (sscanf(cmd.c_str(), "SCOPE,%c,%d,%lu,%lu", &mode, &pin, &rate, &samples) == 4 &&
-        (mode == 'D' || mode == 'A')) {
-      captureScope(mode, pin, rate, samples);
-    }
-  } else if (cmd.startsWith("PWM,")) {
-    int pin;
-    float high, low;
-    unsigned long period, freq, duration;
-    if (sscanf(cmd.c_str(), "PWM,%d,%f,%f,%lu,%lu,%lu", &pin, &high, &low, &period, &freq, &duration) == 6 &&
-        isPwmTestPin(pin) && period >= 100 && freq >= PWM_MIN_FREQ_HZ && freq <= PWM_MAX_FREQ_HZ) {
-      portENTER_CRITICAL(&testMux);
-      pwmTest.pin = pin;
-      pwmTest.dutyHigh = constrain(high, 0.0f, 100.0f);
-      pwmTest.dutyLow = constrain(low, 0.0f, 100.0f);
-      pwmTest.periodMs = period;
-      pwmTest.freqHz = freq;
-      pwmTest.durationMs = duration;
-      pwmTest.startMs = millis();
+    portENTER_CRITICAL(&runMux);
+    runState = RunState::Idle;
+    portEXIT_CRITICAL(&runMux);
+  } else if (cmd.startsWith("RUN,")) {
+    unsigned motor;
+    float duty;
+    unsigned long duration;
+    if (sscanf(cmd.c_str(), "RUN,%u,%f,%lu", &motor, &duty, &duration) == 3 &&
+        motor >= 1 && motor <= MOTOR_COUNT) {
+      portENTER_CRITICAL(&runMux);
+      motorRun.motor = motor - 1;
+      motorRun.duty = constrain(duty, -100.0f, 100.0f);
+      motorRun.durationMs = duration;
+      motorRun.startMs = millis();
       lastPingMs = millis();
-      testState = TestState::Running;
-      portEXIT_CRITICAL(&testMux);
+      runState = RunState::Running;
+      portEXIT_CRITICAL(&runMux);
     }
   }
 }
@@ -457,25 +318,25 @@ void sendPower() {
   }
 }
 
-void sendPwmTest() {
+void sendMotorRun() {
   static uint32_t lastReport = 0;
   uint32_t now = millis();
-  if (now - lastReport < PWM_REPORT_MS) return;
+  if (now - lastReport < MOTOR_REPORT_MS) return;
   lastReport = now;
 
-  portENTER_CRITICAL(&testMux);
-  TestState state = testState;
-  PwmTest test = pwmTest;
+  portENTER_CRITICAL(&runMux);
+  RunState state = runState;
+  MotorRun run = motorRun;
   float duty = outputDuty;
-  portEXIT_CRITICAL(&testMux);
+  portEXIT_CRITICAL(&runMux);
 
   uint32_t remaining = 0;
-  if (state == TestState::Running && test.durationMs > 0) {
-    uint32_t elapsed = now - test.startMs;
-    remaining = elapsed < test.durationMs ? test.durationMs - elapsed : 0;
+  if (state == RunState::Running && run.durationMs > 0) {
+    uint32_t elapsed = now - run.startMs;
+    remaining = elapsed < run.durationMs ? run.durationMs - elapsed : 0;
   }
-  Serial.printf("PWMOUT,%u,%d,%.1f,%lu,%lu\n", (unsigned)state, test.pin, duty,
-                (unsigned long)test.freqHz, (unsigned long)remaining);
+  Serial.printf("RUNOUT,%u,%d,%.1f,%lu\n", (unsigned)state, run.motor + 1, duty,
+                (unsigned long)remaining);
 }
 
 // Runs on core 0 and owns the serial port and I2C bus, so this I/O never slows loop() down
@@ -484,97 +345,70 @@ void telemetryTask(void*) {
   Wire.setClock(I2C_CLOCK_HZ);
   printHello();
   printInfo();
-  printPwmConfig();
   for (;;) {
     readCommands();
     sendHeartbeat();
     sendHealth();
     samplePower();
     sendPower();
-    sendPwmTest();
+    sendMotorRun();
     vTaskDelay(pdMS_TO_TICKS(TELEMETRY_PERIOD_MS));
   }
 }
 
-// ---------- PWM test output (core 1) ----------
+// ---------- Motor output (core 1) ----------
 
-void setupMotorPins() {
+void setupMotors() {
   for (const MotorPins& p : MOTOR_PINS) {
     pinMode(p.ena, OUTPUT);
     digitalWrite(p.ena, LOW);   // coast
-    pinMode(p.in1, OUTPUT);
-    digitalWrite(p.in1, LOW);
-    pinMode(p.in2, OUTPUT);
-    digitalWrite(p.in2, LOW);
+    ledcAttach(p.in1, PWM_FREQ_HZ, PWM_BITS);
+    ledcAttach(p.in2, PWM_FREQ_HZ, PWM_BITS);
+    ledcWrite(p.in1, 0);
+    ledcWrite(p.in2, 0);
   }
 }
 
-// The motor whose IN1/IN2 is this pin, or -1
-int motorForPin(int pin) {
-  for (size_t i = 0; i < MOTOR_COUNT; i++) {
-    if (MOTOR_PINS[i].in1 == pin || MOTOR_PINS[i].in2 == pin) return i;
-  }
-  return -1;
+// duty in % (-100..100): + drives IN1, - drives IN2; enabled = ENA HIGH
+void applyDuty(size_t motor, float duty, bool enabled) {
+  const MotorPins& p = MOTOR_PINS[motor];
+  uint32_t pwm = (uint32_t)(fabsf(duty) / 100.0f * PWM_MAX + 0.5f);
+  ledcWrite(p.in1, duty > 0 ? pwm : 0);
+  ledcWrite(p.in2, duty < 0 ? pwm : 0);
+  digitalWrite(p.ena, enabled ? HIGH : LOW);
 }
 
-void releasePin(int pin) {
-  if (pin < 0) return;
-  ledcDetach(pin);
-  pinMode(pin, OUTPUT);
-  digitalWrite(pin, LOW);
-  int motor = motorForPin(pin);
-  if (motor >= 0) digitalWrite(MOTOR_PINS[motor].ena, LOW);
-}
-
-void runPwmTest() {
+void runMotors() {
   static uint32_t lastUpdate = 0;
-  static int activePin = -1;   // pin currently attached to the PWM peripheral
-  static uint32_t activeFreq = 0;
   uint32_t now = millis();
-  if (now - lastUpdate < PWM_UPDATE_MS) return;
+  if (now - lastUpdate < MOTOR_UPDATE_MS) return;
   lastUpdate = now;
 
-  portENTER_CRITICAL(&testMux);
-  if (testState == TestState::Running && now - lastPingMs > PWM_WATCHDOG_MS) {
-    testState = TestState::Watchdog;
+  portENTER_CRITICAL(&runMux);
+  if (runState == RunState::Running && now - lastPingMs > MOTOR_WATCHDOG_MS) {
+    runState = RunState::Watchdog;
   }
-  if (testState == TestState::Running && pwmTest.durationMs > 0 &&
-      now - pwmTest.startMs >= pwmTest.durationMs) {
-    testState = TestState::Done;
+  if (runState == RunState::Running && motorRun.durationMs > 0 &&
+      now - motorRun.startMs >= motorRun.durationMs) {
+    runState = RunState::Done;
   }
-  PwmTest test = pwmTest;
-  bool running = testState == TestState::Running;
-  portEXIT_CRITICAL(&testMux);
+  MotorRun run = motorRun;
+  bool running = runState == RunState::Running;
+  portEXIT_CRITICAL(&runMux);
 
-  int wantPin = running ? test.pin : -1;
-  if (wantPin != activePin || (wantPin >= 0 && test.freqHz != activeFreq)) {
-    releasePin(activePin);
-    activePin = -1;
-    if (wantPin >= 0 && ledcAttach(wantPin, test.freqHz, PWM_BITS)) {
-      activePin = wantPin;
-      activeFreq = test.freqHz;
-      // Driving a motor input: let that L298N channel conduct
-      int motor = motorForPin(wantPin);
-      if (motor >= 0) digitalWrite(MOTOR_PINS[motor].ena, HIGH);
-    }
+  for (size_t i = 0; i < MOTOR_COUNT; i++) {
+    bool active = running && i == (size_t)run.motor;
+    applyDuty(i, active ? run.duty : 0, active);
   }
 
-  float duty = 0;
-  if (activePin >= 0) {
-    bool highHalf = (now - test.startMs) % test.periodMs < test.periodMs / 2;
-    duty = highHalf ? test.dutyHigh : test.dutyLow;
-    ledcWrite(activePin, (uint32_t)(duty / 100.0f * PWM_MAX + 0.5f));
-  }
-
-  portENTER_CRITICAL(&testMux);
-  outputDuty = duty;
-  portEXIT_CRITICAL(&testMux);
+  portENTER_CRITICAL(&runMux);
+  outputDuty = running ? run.duty : 0;
+  portEXIT_CRITICAL(&runMux);
 }
 
 void setup() {
-  Serial.setTxBufferSize(SERIAL_TX_BUFFER);
   Serial.begin(SERIAL_BAUD);
-  setupMotorPins();
+  setupMotors();
   // setup() runs inside the loop task, so this is the task loop() runs in
   mainLoopTask = xTaskGetCurrentTaskHandle();
   xTaskCreatePinnedToCore(telemetryTask, "telemetry", TELEMETRY_STACK_BYTES, nullptr,
@@ -584,5 +418,5 @@ void setup() {
 // Core 1: time-critical work only
 void loop() {
   measureLoop();
-  runPwmTest();
+  runMotors();
 }
