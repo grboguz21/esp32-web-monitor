@@ -59,8 +59,8 @@ constexpr size_t LOG_QUEUE_LENGTH = 256;      // 1.28 s of ticks buffered betwee
 constexpr float SUPPLY_V = 12.0f;
 constexpr float DEFAULT_CPR = 186.2f;          // measured on motor 1 (counts per output rev)
 constexpr size_t SPEED_TAPS = 4;               // controller speed: backward difference over 20 ms
-constexpr float DEFAULT_KP = 0.0089f;          // V per RPM (SIMC, tau_c = tau = 125 ms)
-constexpr float DEFAULT_KI = 0.071f;           // V per RPM*s
+constexpr float DEFAULT_KP = 0.0417f;          // V per RPM (SIMC, tau_c = theta = 15 ms)
+constexpr float DEFAULT_KI = 0.333f;           // V per RPM*s; chosen in a hand-brake test
 // Reference model: the target is followed by a reference speed with this time constant;
 // feedforward drives the motor along the reference (with kA for the acceleration) and the
 // PI only corrects the gap between reference and measured speed
@@ -91,7 +91,7 @@ constexpr FfPoint FF_MINUS[] = {
 
 enum class RunMode : uint8_t { OpenLoop = 0, Feedforward = 1, FeedforwardPi = 2 };
 
-constexpr const char* FIRMWARE_VERSION = "0.16.0";
+constexpr const char* FIRMWARE_VERSION = "0.17.0";
 
 // Protocol (one message per line):
 //   ESP32 -> PC : HB,<uptime_ms>               heartbeat

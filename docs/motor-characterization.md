@@ -118,16 +118,23 @@ PI gains from SIMC with K = 100 RPM/V, tau = 0.125 s, theta = 0.015 s:
 
 | Setting | tau_c | Kp (V/RPM) | Ki (V/(RPM·s)) |
 |---|---|---|---|
-| **Calm (default)** | 125 ms | **0.0089** | **0.071** |
+| Calm | 125 ms | 0.0089 | 0.071 |
 | Medium | 50 ms | 0.0192 | 0.154 |
-| Aggressive | 15 ms | 0.0417 | 0.333 |
+| **Aggressive (default)** | 15 ms | **0.0417** | **0.333** |
 
-Defaults: **tau_ref = 100 ms, kA = 0.00125, Kp = 0.0089, Ki = 0.071.**
+Defaults: **tau_ref = 100 ms, kA = 0.00125, Kp = 0.0417, Ki = 0.333** (firmware 0.17.0).
+
+The aggressive set was picked in a hand-brake test: with the reference model carrying target
+changes, higher PI gains no longer cause overshoot on a step, and they cut both the dip while
+braking and the jump when the brake is released. With the calm gains, about 2.5 V built up in
+the integral while braked and threw the motor to ~550 RPM (target 300) on release. The cost is
+that the ±8 RPM speed ripple shows up as about ±0.3 V on the output.
 
 ## Validation
 
 Data: [`data/motor1_speed_control_raw.csv`](data/motor1_speed_control_raw.csv), from
-[`tools/speed_test.py`](../tools/speed_test.py). Settling is to 5 % on a 50 ms average.
+[`tools/speed_test.py`](../tools/speed_test.py). Settling is to 5 % on a 50 ms average. These
+runs used the calm gains (firmware 0.15.0), before the breakaway handling of 0.16.0.
 
 Without the reference model (PI on target minus speed), feedforward and PI both pushed on a
 step: 12-36 % overshoot and 1-2 s settling. With it:
@@ -145,7 +152,12 @@ Feedforward alone lands 7-12 RPM short of the target.
 
 Disturbance (shaft braked by hand at 300 RPM): with FF + PI the speed dipped to the low 200s
 and came back to 300 while still braked, with the duty rising to about 70 %. With feedforward
-only the motor stopped.
+only the motor stopped. Releasing the brake with the calm gains overshot to ~550 RPM; the
+aggressive gains brought that down clearly (judged on the dashboard chart).
+
+Breakaway (firmware 0.16.0): while the motor is not turning in the target's direction (below
+30 RPM), the reference holds at the measured speed, the integral stays empty and a kick rises
+from the start threshold (+40 %/s, max 60 %) until it moves, so it does not lurch once free.
 
 Speed ripple is about ±8 RPM: one encoder count in the 20 ms window is about 16 RPM.
 
