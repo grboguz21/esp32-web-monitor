@@ -66,6 +66,14 @@ constexpr float DEFAULT_KI = 0.071f;           // V per RPM*s
 // PI only corrects the gap between reference and measured speed
 constexpr float DEFAULT_TAU_REF_S = 0.100f;
 constexpr float DEFAULT_KA = 0.00125f;         // V per RPM/s (tau / K from the step test)
+// Breakaway: while the motor is stuck, the reference waits, the PI is off and a kick
+// starting at the measured start threshold rises until the motor moves. Without this the
+// integral builds up during the stall and the motor lurches past the target once free.
+constexpr float STUCK_RPM = 30.0f;             // below this the motor counts as not moving
+constexpr float KICK_START_PLUS = 19.7f;       // % start thresholds measured on motor 1
+constexpr float KICK_START_MINUS = 20.8f;
+constexpr float KICK_RATE = 40.0f;             // % per second added while still stuck
+constexpr float KICK_MAX = 60.0f;              // %
 
 struct FfPoint {
   float rpm;
@@ -83,7 +91,7 @@ constexpr FfPoint FF_MINUS[] = {
 
 enum class RunMode : uint8_t { OpenLoop = 0, Feedforward = 1, FeedforwardPi = 2 };
 
-constexpr const char* FIRMWARE_VERSION = "0.15.0";
+constexpr const char* FIRMWARE_VERSION = "0.16.0";
 
 // Protocol (one message per line):
 //   ESP32 -> PC : HB,<uptime_ms>               heartbeat
@@ -580,6 +588,7 @@ float feedforwardDuty(float rpm) {
 struct PiState {
   float integralV = 0;
   float refRpm = 0;
+  float kickDuty = 0;   // breakaway kick while stuck, 0 once moving
   float lastTargetRpm = 0;
   RunMode lastMode = RunMode::OpenLoop;
   int lastMotor = -1;
@@ -611,8 +620,23 @@ float speedControl(PiState& pi, const MotorRun& run, float speedRpm, const Gains
   piDuty = 0;
   if (run.targetRpm == 0) {
     pi.refRpm = 0;
+    pi.kickDuty = 0;
     return 0;
   }
+
+  // Stuck: hold the reference at the motor, keep the integral empty and push with a rising
+  // kick until it breaks free. A target slower than STUCK_RPM uses half of it as the limit.
+  float stuckLimit = fminf(STUCK_RPM, fabsf(run.targetRpm) / 2);
+  bool movingWithTarget = speedRpm * run.targetRpm > 0 && fabsf(speedRpm) >= stuckLimit;
+  if (!movingWithTarget) {
+    float start = run.targetRpm > 0 ? KICK_START_PLUS : KICK_START_MINUS;
+    pi.kickDuty = pi.kickDuty == 0 ? start : fminf(pi.kickDuty + KICK_RATE * dt, KICK_MAX);
+    pi.refRpm = speedRpm;
+    pi.integralV = 0;
+    ffDuty = run.targetRpm > 0 ? pi.kickDuty : -pi.kickDuty;
+    return ffDuty;
+  }
+  pi.kickDuty = 0;
 
   // Reference: first-order approach to the target
   float refRate = (run.targetRpm - pi.refRpm) / g.tauRefS;   // RPM/s
