@@ -5,14 +5,21 @@ constexpr uint32_t SERIAL_BAUD = 115200;
 constexpr uint32_t HEARTBEAT_INTERVAL_MS = 500;
 constexpr uint32_t HEALTH_INTERVAL_MS = 1000;
 
+// Dashboard communication runs on core 0 so loop() keeps core 1 to itself
+constexpr BaseType_t TELEMETRY_CORE = 0;
+constexpr uint32_t TELEMETRY_STACK_BYTES = 4096;
+constexpr UBaseType_t TELEMETRY_PRIORITY = 1;
+constexpr uint32_t TELEMETRY_PERIOD_MS = 5;
+
 constexpr const char* DEVICE_NAME = "ESP32";
-constexpr const char* FIRMWARE_VERSION = "0.2.0";
+constexpr const char* FIRMWARE_VERSION = "0.3.0";
 
 // Protocol (one message per line):
 //   ESP32 -> PC : HB,<uptime_ms>               heartbeat
 //                 HELLO,<device>,<version>     identification
 //                 INFO,<chip>,<revision>,<cores>,<cpu_mhz>,<flash_bytes>,<heap_bytes>,<mac>,<reset_reason>
 //                 HEALTH,<free_heap>,<min_free_heap>,<max_alloc_heap>,<loop_avg_us>,<loop_max_us>,<loop_hz>,<stack_free_bytes>
+//                 (loop_* and stack_free_bytes describe the loop() task on core 1)
 //   PC -> ESP32 : HELLO?                       request HELLO and INFO
 
 struct LoopStats {
@@ -22,7 +29,11 @@ struct LoopStats {
   uint32_t maxUs = 0;
 };
 
+// Written by loop() on core 1, read and reset by the telemetry task on core 0
 LoopStats loopStats;
+portMUX_TYPE loopStatsMux = portMUX_INITIALIZER_UNLOCKED;
+
+TaskHandle_t mainLoopTask = nullptr;
 
 const char* resetReasonName(esp_reset_reason_t reason) {
   switch (reason) {
@@ -82,6 +93,7 @@ void readCommands() {
 // Measures the time between consecutive loop() starts
 void measureLoop() {
   uint32_t now = micros();
+  portENTER_CRITICAL(&loopStatsMux);
   if (loopStats.lastStartUs != 0) {
     uint32_t dt = now - loopStats.lastStartUs;
     loopStats.sumUs += dt;
@@ -89,6 +101,7 @@ void measureLoop() {
     if (dt > loopStats.maxUs) loopStats.maxUs = dt;
   }
   loopStats.lastStartUs = now;
+  portEXIT_CRITICAL(&loopStatsMux);
 }
 
 void sendHeartbeat() {
@@ -107,32 +120,48 @@ void sendHealth() {
   if (elapsed < HEALTH_INTERVAL_MS) return;
   lastReport = now;
 
-  uint32_t avgUs = loopStats.count ? loopStats.sumUs / loopStats.count : 0;
-  uint32_t loopHz = (uint64_t)loopStats.count * 1000 / elapsed;
-
-  Serial.printf("HEALTH,%lu,%lu,%lu,%lu,%lu,%lu,%lu\n",
-                (unsigned long)ESP.getFreeHeap(),
-                (unsigned long)ESP.getMinFreeHeap(),
-                (unsigned long)ESP.getMaxAllocHeap(),
-                (unsigned long)avgUs,
-                (unsigned long)loopStats.maxUs,
-                (unsigned long)loopHz,
-                (unsigned long)uxTaskGetStackHighWaterMark(NULL));
-
+  // Take a snapshot under the lock; never print while holding it
+  portENTER_CRITICAL(&loopStatsMux);
+  LoopStats snapshot = loopStats;
   loopStats.sumUs = 0;
   loopStats.count = 0;
   loopStats.maxUs = 0;
+  portEXIT_CRITICAL(&loopStatsMux);
+
+  float avgUs = snapshot.count ? (float)snapshot.sumUs / snapshot.count : 0;
+  uint32_t loopHz = (uint64_t)snapshot.count * 1000 / elapsed;
+
+  Serial.printf("HEALTH,%lu,%lu,%lu,%.2f,%lu,%lu,%lu\n",
+                (unsigned long)ESP.getFreeHeap(),
+                (unsigned long)ESP.getMinFreeHeap(),
+                (unsigned long)ESP.getMaxAllocHeap(),
+                avgUs,
+                (unsigned long)snapshot.maxUs,
+                (unsigned long)loopHz,
+                (unsigned long)uxTaskGetStackHighWaterMark(mainLoopTask));
+}
+
+// Runs on core 0 and owns the serial port, so serial I/O never slows loop() down
+void telemetryTask(void*) {
+  printHello();
+  printInfo();
+  for (;;) {
+    readCommands();
+    sendHeartbeat();
+    sendHealth();
+    vTaskDelay(pdMS_TO_TICKS(TELEMETRY_PERIOD_MS));
+  }
 }
 
 void setup() {
   Serial.begin(SERIAL_BAUD);
-  printHello();
-  printInfo();
+  // setup() runs inside the loop task, so this is the task loop() runs in
+  mainLoopTask = xTaskGetCurrentTaskHandle();
+  xTaskCreatePinnedToCore(telemetryTask, "telemetry", TELEMETRY_STACK_BYTES, nullptr,
+                          TELEMETRY_PRIORITY, nullptr, TELEMETRY_CORE);
 }
 
+// Core 1: kept free for time-critical work (motor control will go here)
 void loop() {
   measureLoop();
-  readCommands();
-  sendHeartbeat();
-  sendHealth();
 }

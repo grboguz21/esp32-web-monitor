@@ -300,6 +300,7 @@ function formatBytes(n) {
 }
 
 function formatRate(hz) {
+  if (hz >= 1e6) return `${(hz / 1e6).toFixed(2)} MHz`;
   if (hz >= 1000) return `${(hz / 1000).toFixed(1)} kHz`;
   return `${hz} Hz`;
 }
