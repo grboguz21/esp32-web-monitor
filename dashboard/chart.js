@@ -12,6 +12,7 @@ class LiveChart {
     this.windowMs = windowMs;
     this.labels = labels;       // { empty(), axis(seconds), ago(seconds) }
     this.data = new Map(series.map((s) => [s.key, []]));
+    this.hidden = new Set();    // series keys switched off in the legend
     this.hoverX = null;
 
     this.canvas = document.createElement('canvas');
@@ -32,14 +33,23 @@ class LiveChart {
     requestAnimationFrame(frame);
   }
 
+  // Legend entries are checkboxes that show or hide their series
   renderLegend() {
     if (!this.legend) return;
     this.legend.innerHTML = '';
     for (const s of this.series) {
-      const item = document.createElement('span');
+      const item = document.createElement('label');
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.checked = !this.hidden.has(s.key);
+      box.style.accentColor = `var(${s.color})`;
+      box.addEventListener('change', () => {
+        if (box.checked) this.hidden.delete(s.key);
+        else this.hidden.add(s.key);
+      });
       const swatch = document.createElement('i');
       swatch.style.background = `var(${s.color})`;
-      item.append(swatch, document.createTextNode(s.label()));
+      item.append(box, swatch, document.createTextNode(s.label()));
       this.legend.append(item);
     }
   }
@@ -75,7 +85,8 @@ class LiveChart {
     ctx.clearRect(0, 0, w, h);
     ctx.font = '11px system-ui, sans-serif';
 
-    const active = this.series.filter((s) => this.data.get(s.key).length > 0);
+    const visible = this.series.filter((s) => !this.hidden.has(s.key));
+    const active = visible.filter((s) => this.data.get(s.key).length > 0);
 
     // Shared y scale with round tick steps
     let lo = 0;
@@ -119,7 +130,8 @@ class LiveChart {
     if (active.length === 0) {
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(this.labels.empty(), pad.left + pw / 2, pad.top + ph / 2);
+      const message = visible.length ? this.labels.empty() : this.labels.none();
+      ctx.fillText(message, pad.left + pw / 2, pad.top + ph / 2);
       this.tip.hidden = true;
       return;
     }

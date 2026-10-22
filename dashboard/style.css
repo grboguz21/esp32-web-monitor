@@ -747,7 +747,9 @@ h2[data-help] {
 .motor-name { font-weight: 600; font-size: 0.85rem; }
 
 .chart-legend { display: flex; gap: 14px; font-size: 0.75rem; color: var(--muted); }
-.chart-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.chart-legend label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+.chart-legend input { margin: 0; width: 13px; height: 13px; cursor: pointer; }
+.chart-legend label:has(input:not(:checked)) { opacity: 0.55; }
 .chart-legend i { width: 14px; height: 3px; border-radius: 2px; }
 .chart-tip-time { color: var(--muted); margin-bottom: 2px; }
 .chart-tip div:not(.chart-tip-time) { display: flex; align-items: center; gap: 6px; }
