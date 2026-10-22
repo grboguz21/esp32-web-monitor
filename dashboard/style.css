@@ -340,10 +340,6 @@ select:disabled { opacity: 0.6; }
 /* Health */
 .card-note { color: var(--muted); font-size: 0.72rem; }
 
-.health { transition: opacity 0.2s; }
-.health[data-stale],
-.power[data-stale],
-.motor-test[data-stale] { opacity: 0.45; }
 
 .card-actions { display: flex; align-items: center; gap: 8px; }
 .power-hint {
