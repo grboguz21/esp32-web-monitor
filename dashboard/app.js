@@ -40,15 +40,7 @@ const els = {
   hLoopMax: document.getElementById('hLoopMax'),
   hLoopHz: document.getElementById('hLoopHz'),
   hStack: document.getElementById('hStack'),
-  powerCard: document.getElementById('powerCard'),
-  powerBadge: document.getElementById('powerBadge'),
-  powerHint: document.getElementById('powerHint'),
-  resetPeaksBtn: document.getElementById('resetPeaksBtn'),
-  pVoltage: document.getElementById('pVoltage'),
-  pVoltageSub: document.getElementById('pVoltageSub'),
-  pCurrent: document.getElementById('pCurrent'),
-  pCurrentSub: document.getElementById('pCurrentSub'),
-  pPower: document.getElementById('pPower'),
+  powerCards: document.querySelectorAll('.power'),
   log: document.getElementById('log'),
   clearLogBtn: document.getElementById('clearLogBtn'),
 };
@@ -88,6 +80,23 @@ let power = null;       // latest POWER averages: { voltage, currentMa, powerMw 
 let powerSensor = 'unknown';  // 'unknown' (no POWER yet), 'missing' or 'ok'
 let minVoltage = null;  // extremes since connecting or the last reset
 let maxCurrentMa = null;
+
+const chartLabels = {
+  empty: () => t('noData'),
+  axis: (s) => (s === 0 ? t('now') : t('axisAgo', { n: s })),
+  ago: (s) => (s === 0 ? t('now') : t('secAgo', { n: s })),
+};
+const currentChart = new LiveChart(document.getElementById('currentChart'), {
+  format: (ma) => formatCurrent(ma),
+  minSpan: 50,
+  labels: chartLabels,
+});
+const voltageChart = new LiveChart(document.getElementById('voltageChart'), {
+  format: (v) => `${v.toFixed(2)} V`,
+  tickFormat: (v) => `${v.toFixed(1)} V`,
+  minSpan: 0.5,
+  labels: chartLabels,
+});
 let uptimeMs = null;
 let lastBeatAt = 0;     // performance.now() of the last heartbeat
 
@@ -203,6 +212,8 @@ async function closePort() {
   info = null;
   health = null;
   power = null;
+  currentChart.clear();
+  voltageChart.clear();
   powerSensor = 'unknown';
   minVoltage = null;
   maxCurrentMa = null;
@@ -278,6 +289,8 @@ function handleLine(line) {
     const [voltage, currentMa, powerMw, windowMinV, windowMaxMa] = fields.map(Number);
     power = { voltage, currentMa, powerMw };
     powerSensor = 'ok';
+    currentChart.push(currentMa);
+    voltageChart.push(voltage);
     minVoltage = minVoltage === null ? windowMinV : Math.min(minVoltage, windowMinV);
     maxCurrentMa = maxCurrentMa === null ? windowMaxMa : Math.max(maxCurrentMa, windowMaxMa);
     return;
@@ -405,30 +418,34 @@ function formatPower(mw) {
   return `${Math.round(mw)} mW`;
 }
 
+// The same Power card appears on the Dashboard and the Power tab
 function renderPower(state) {
   const sensor = state === 'online' ? powerSensor : 'unknown';
   const badge = { ok: ['sensorOk', 'ok'], missing: ['sensorMissing', 'bad'], unknown: ['sensorWaiting', ''] }[sensor];
+  const values = power
+    ? {
+        voltage: `${power.voltage.toFixed(2)} V`,
+        voltageSub: t('lowestV', { v: `${minVoltage.toFixed(2)} V` }),
+        current: formatCurrent(power.currentMa),
+        currentSub: t('peakI', { i: formatCurrent(maxCurrentMa) }),
+        power: formatPower(power.powerMw),
+      }
+    : { voltage: '—', voltageSub: '—', current: '—', currentSub: '—', power: '—' };
 
-  els.powerCard.dataset.sensor = sensor;
-  els.powerCard.toggleAttribute('data-stale', state !== 'online');
-  els.powerBadge.textContent = t(badge[0]);
-  if (badge[1]) els.powerBadge.dataset.level = badge[1];
-  else delete els.powerBadge.dataset.level;
-  els.powerHint.hidden = sensor !== 'missing';
-  els.resetPeaksBtn.disabled = !power;
-
-  if (!power) {
-    for (const el of [els.pVoltage, els.pVoltageSub, els.pCurrent, els.pCurrentSub, els.pPower]) {
-      el.textContent = '—';
-    }
-    return;
+  for (const card of els.powerCards) {
+    const field = (name) => card.querySelector(`[data-pfield="${name}"]`);
+    card.dataset.sensor = sensor;
+    card.toggleAttribute('data-stale', state !== 'online');
+    field('badge').textContent = t(badge[0]);
+    if (badge[1]) field('badge').dataset.level = badge[1];
+    else delete field('badge').dataset.level;
+    field('hint').hidden = sensor !== 'missing';
+    field('reset').disabled = !power;
+    for (const [name, text] of Object.entries(values)) field(name).textContent = text;
   }
 
-  els.pVoltage.textContent = `${power.voltage.toFixed(2)} V`;
-  els.pVoltageSub.textContent = t('lowestV', { v: `${minVoltage.toFixed(2)} V` });
-  els.pCurrent.textContent = formatCurrent(power.currentMa);
-  els.pCurrentSub.textContent = t('peakI', { i: formatCurrent(maxCurrentMa) });
-  els.pPower.textContent = formatPower(power.powerMw);
+  currentChart.draw();
+  voltageChart.draw();
 }
 
 function log(message) {
@@ -459,11 +476,11 @@ if (!('serial' in navigator)) {
 }
 
 els.clearLogBtn.addEventListener('click', () => { els.log.textContent = ''; });
-els.resetPeaksBtn.addEventListener('click', () => {
+document.querySelectorAll('[data-pfield="reset"]').forEach((b) => b.addEventListener('click', () => {
   minVoltage = power?.voltage ?? null;
   maxCurrentMa = power?.currentMa ?? null;
   render();
-});
+}));
 
 // ---------- Theme ----------
 

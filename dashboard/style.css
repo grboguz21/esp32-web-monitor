@@ -682,3 +682,44 @@ h2[data-help] {
 }
 .tip-simple { font-weight: 600; margin-bottom: 10px !important; }
 .tip-tech { color: var(--muted); }
+
+/* Power tab */
+.chart-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+@media (max-width: 1000px) {
+  .chart-grid { grid-template-columns: minmax(0, 1fr); }
+}
+.chart { position: relative; height: 220px; }
+.chart canvas { display: block; }
+.chart-tip {
+  position: absolute;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 4px 12px rgb(0 0 0 / 0.12);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.wiring-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px;
+}
+@media (max-width: 700px) {
+  .wiring-grid { grid-template-columns: minmax(0, 1fr); }
+}
+.wiring h3 { margin: 0 0 8px; font-size: 0.8rem; color: var(--muted); font-weight: 600; }
+.wiring .details { max-width: 260px; }
+.wiring-path {
+  margin: 0 0 8px;
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  font-size: 0.85rem;
+}
