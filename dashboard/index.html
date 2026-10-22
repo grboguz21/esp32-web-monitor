@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ESP32 Web Monitor</title>
+  <link rel="stylesheet" href="style.css">
+  <script>
+    // Apply the saved theme before first paint to avoid a flash
+    try {
+      const theme = localStorage.getItem('esp32-dashboard-theme');
+      if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+    } catch { /* storage unavailable */ }
+  </script>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="brand">
+        <h1>ESP32 Web Monitor</h1>
+        <p class="subtitle" data-i18n="subtitle">Web Serial dashboard</p>
+      </div>
+
+      <div id="unsupported" class="banner" data-i18n="unsupported" hidden>
+        This browser does not support Web Serial. Please use Chrome or Edge.
+      </div>
+
+      <section class="panel status-card" data-state="offline" id="statusCard" data-help="status">
+        <span class="dot" aria-hidden="true"></span>
+        <div>
+          <div class="status-label" id="statusLabel"></div>
+          <div class="status-hint" id="statusHint"></div>
+        </div>
+      </section>
+
+      <section class="panel connection">
+        <label for="portSelect" class="field-label" data-help="port"><span data-i18n="serialPort">Serial port</span></label>
+        <select id="portSelect"></select>
+        <button id="addPortBtn" class="btn btn-secondary" data-i18n="addPort">Add port…</button>
+        <button id="connectBtn" class="btn">Connect</button>
+      </section>
+
+      <section class="panel">
+        <h2 data-i18n="device">Device</h2>
+        <dl class="details">
+          <div><dt data-help="name"><span data-i18n="name">Name</span></dt><dd id="deviceName">—</dd></div>
+          <div><dt data-help="firmware"><span data-i18n="firmware">Firmware</span></dt><dd id="firmwareVersion">—</dd></div>
+          <div><dt data-help="uptime"><span data-i18n="uptime">Uptime</span></dt><dd id="uptime">—</dd></div>
+          <div><dt data-help="lastBeat"><span data-i18n="lastBeat">Last heartbeat</span></dt><dd id="lastBeat">—</dd></div>
+          <div><dt data-help="lastReset"><span data-i18n="lastReset">Last reset</span></dt><dd><span id="resetReason" class="badge">—</span></dd></div>
+        </dl>
+      </section>
+
+      <section class="panel">
+        <h2 data-i18n="chip">Chip</h2>
+        <dl class="details">
+          <div><dt data-help="model"><span data-i18n="model">Model</span></dt><dd id="chipModel">—</dd></div>
+          <div><dt data-help="cpu"><span data-i18n="cpu">CPU</span></dt><dd id="chipCpu">—</dd></div>
+          <div><dt data-help="flash"><span data-i18n="flash">Flash</span></dt><dd id="chipFlash">—</dd></div>
+          <div><dt data-help="mac"><span data-i18n="mac">MAC</span></dt><dd id="chipMac">—</dd></div>
+        </dl>
+      </section>
+    </aside>
+
+    <main class="content">
+      <div class="topbar">
+        <nav class="tabs" role="tablist">
+          <button class="tab" role="tab" data-tab="dashboard" aria-selected="true" data-i18n="tabDashboard">Dashboard</button>
+          <button class="tab" role="tab" data-tab="board" aria-selected="false" data-i18n="tabBoard">Board pinout</button>
+        </nav>
+        <div class="toolbar">
+          <div class="lang-switch" role="group" aria-label="Language">
+            <button type="button" data-lang="en">EN</button>
+            <button type="button" data-lang="tr">TR</button>
+          </div>
+          <button id="themeBtn" class="icon-btn" type="button"></button>
+        </div>
+      </div>
+
+      <div class="tab-panel" data-panel="dashboard">
+        <section class="card health" id="healthCard">
+          <div class="card-head">
+            <h2 data-i18n="health">System health</h2>
+            <span class="card-note" data-i18n="healthNote">updated every second</span>
+          </div>
+          <div class="tiles">
+            <div class="tile">
+              <div class="tile-label" data-help="freeHeap"><span data-i18n="freeHeap">Free heap</span></div>
+              <div class="tile-value" id="hFree">—</div>
+              <div class="meter"><span id="hFreeBar"></span></div>
+              <div class="tile-sub" id="hFreeSub">—</div>
+            </div>
+            <div class="tile">
+              <div class="tile-label" data-help="minHeap"><span data-i18n="minHeap">Lowest free heap</span></div>
+              <div class="tile-value" id="hMin">—</div>
+              <div class="tile-sub" data-i18n="sinceBoot">since boot</div>
+            </div>
+            <div class="tile">
+              <div class="tile-label" data-help="maxBlock"><span data-i18n="maxBlock">Largest free block</span></div>
+              <div class="tile-value" id="hBlock">—</div>
+              <div class="tile-sub" id="hBlockSub">—</div>
+            </div>
+            <div class="tile">
+              <div class="tile-label" data-help="loopTime"><span data-i18n="loopTime">Loop time</span></div>
+              <div class="tile-value" id="hLoopAvg">—</div>
+              <div class="tile-sub" id="hLoopMax">—</div>
+            </div>
+            <div class="tile">
+              <div class="tile-label" data-help="loopRate"><span data-i18n="loopRate">Loop rate</span></div>
+              <div class="tile-value" id="hLoopHz">—</div>
+              <div class="tile-sub" data-i18n="perSecond">iterations per second</div>
+            </div>
+            <div class="tile">
+              <div class="tile-label" data-help="stack"><span data-i18n="stack">Stack headroom</span></div>
+              <div class="tile-value" id="hStack">—</div>
+              <div class="tile-sub" data-i18n="stackSub">unused loop task stack</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="card log-card">
+          <div class="card-head">
+            <h2 data-help="log"><span data-i18n="serialOutput">Serial output</span></h2>
+            <button id="clearLogBtn" class="btn btn-ghost" data-i18n="clear">Clear</button>
+          </div>
+          <pre id="log" class="log"></pre>
+        </section>
+      </div>
+
+      <div class="tab-panel" data-panel="board" hidden>
+        <section class="card board-intro">
+          <div>
+            <h2 data-i18n="boardTitle">DOIT ESP32 DevKit V1 · 30 pins</h2>
+            <p class="placeholder" data-i18n="boardDesc">Top view, USB at the bottom. All GPIOs use 3.3 V logic and are not 5 V tolerant. Click a pin for details.</p>
+          </div>
+          <div class="filters" id="pinFilters"></div>
+          <div class="legend" id="pinLegend"></div>
+        </section>
+
+        <div class="board-layout">
+          <section class="card board-scroll">
+            <div class="board-view">
+              <div class="pins-col" id="pinsLeft"></div>
+              <div class="board-art" id="boardArt"></div>
+              <div class="pins-col" id="pinsRight"></div>
+            </div>
+          </section>
+          <aside class="card pin-detail" id="pinDetail"></aside>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="i18n.js"></script>
+  <script src="board.js"></script>
+  <script src="help.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
