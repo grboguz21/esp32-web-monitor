@@ -817,8 +817,12 @@ h2[data-help] {
 .dir-switch button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 /* Start threshold (kS) */
-.ramp-controls { grid-template-columns: repeat(4, minmax(0, 1fr)); align-items: end; }
-@media (max-width: 900px) { .ramp-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.ks-buttons { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
+@media (max-width: 900px) { .ks-buttons { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.ks-table { border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.ks-table th, .ks-table td { padding: 4px 14px 4px 0; text-align: left; }
+.ks-table th { color: var(--muted); font-weight: 600; font-size: 0.78rem; }
+.ks-table td { font-weight: 700; min-width: 130px; }
 .btn-record { background: var(--online); color: #fff; }
 .ks-results {
   display: flex;
@@ -832,7 +836,6 @@ h2[data-help] {
   font-size: 0.85rem;
   font-variant-numeric: tabular-nums;
 }
-.ks-title { font-weight: 700; }
 .ks-supply { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; color: var(--muted); font-size: 0.75rem; }
 .ks-supply input {
   width: 70px;

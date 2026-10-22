@@ -50,13 +50,22 @@ const els = {
   testDutyNow: document.getElementById('testDutyNow'),
   pwmChartTitle: document.getElementById('pwmChartTitle'),
   testStartBtn: document.getElementById('testStartBtn'),
+  ksMotor: document.getElementById('ksMotor'),
+  ksType: document.getElementById('ksType'),
+  ksStatus: document.getElementById('ksStatus'),
   rampMax: document.getElementById('rampMax'),
+  rampMaxLabel: document.getElementById('rampMaxLabel'),
   rampTime: document.getElementById('rampTime'),
-  rampStartBtn: document.getElementById('rampStartBtn'),
+  rampPlusBtn: document.getElementById('rampPlusBtn'),
+  rampMinusBtn: document.getElementById('rampMinusBtn'),
+  rampStopBtn: document.getElementById('rampStopBtn'),
   ksRecordBtn: document.getElementById('ksRecordBtn'),
-  ksTitle: document.getElementById('ksTitle'),
-  ksPlus: document.getElementById('ksPlus'),
-  ksMinus: document.getElementById('ksMinus'),
+  ksCells: {
+    startPlus: document.getElementById('ksStartPlus'),
+    startMinus: document.getElementById('ksStartMinus'),
+    stopPlus: document.getElementById('ksStopPlus'),
+    stopMinus: document.getElementById('ksStopMinus'),
+  },
   ksSupply: document.getElementById('ksSupply'),
   ksResetBtn: document.getElementById('ksResetBtn'),
   testStopBtn: document.getElementById('testStopBtn'),
@@ -151,11 +160,21 @@ let testState = null;    // null until the firmware reports RUNOUT, then 0 idle 
 let testOutput = null;   // { motor, duty, remainingMs }
 let simTimer = null;     // simulated run while demo data is on and no board is connected
 
-// Start threshold (kS) per motor and direction, saved in this browser
+// Start and stop thresholds per motor and direction, saved in this browser
 const KS_STORAGE_KEY = 'esp32-dashboard-ks';
-let ksResults = {};     // { '1': { plus: 18.4, minus: 20.1 }, ... } duty in %
+// { '1': { startPlus, startMinus, stopPlus, stopMinus }, ... } duty in %
+let ksResults = {};
 try { ksResults = JSON.parse(localStorage.getItem(KS_STORAGE_KEY)) ?? {}; } catch { /* storage unavailable */ }
-let ramp = null;        // { timer } while a ramp runs
+for (const entry of Object.values(ksResults)) {
+  // Earlier versions stored only start thresholds as plus/minus
+  if ('plus' in entry) { entry.startPlus ??= entry.plus; delete entry.plus; }
+  if ('minus' in entry) { entry.startMinus ??= entry.minus; delete entry.minus; }
+}
+let ramp = null;        // { timer, motor, dir, type } while a ramp runs
+
+function saveKs() {
+  try { localStorage.setItem(KS_STORAGE_KEY, JSON.stringify(ksResults)); } catch { /* storage unavailable */ }
+}
 
 const signedPercent = (d) => `${d > 0 ? '+' : d < 0 ? '−' : ''}${Math.abs(d).toFixed(0)} %`;
 
@@ -178,6 +197,14 @@ function renderTestPins() {
     els.testPin.add(new Option(`${t(target.label)} · ${pins}`, key));
   }
   els.testPin.value = selected in TEST_TARGETS ? selected : '1';
+
+  const ksSelected = els.ksMotor.value || '1';
+  els.ksMotor.innerHTML = '';
+  for (const [key, target] of Object.entries(TEST_TARGETS)) {
+    if (target.pin) continue;   // thresholds are for motors only
+    els.ksMotor.add(new Option(`${t(target.label)} · ${target.in1} / ${target.in2}`, key));
+  }
+  els.ksMotor.value = ksSelected;
 }
 
 let uptimeMs = null;
@@ -605,21 +632,34 @@ function renderTest(state) {
     parts.push(signedPercent(testOutput.duty));
     if (testOutput.remainingMs > 0) parts.push(t('remaining', { s: (testOutput.remainingMs / 1000).toFixed(1) }));
   }
-  if (ramp) parts.push(t('rampOn'));
   els.testDutyNow.textContent = parts.join(' · ');
+  renderKs(state);
+}
 
-  // Start threshold readout for the selected motor
-  const motorRunning = running && !isLedTarget(testOutput.motor);
-  els.ksRecordBtn.disabled = !motorRunning;
-  els.rampStartBtn.disabled = !((state === 'online' && supported) || (demo && !port)) || ledSelected;
-  const selected = Number(els.testPin.value);
-  const result = ksResults[selected] ?? {};
+function renderKs(state) {
+  const canRun = (state === 'online' && testState !== null) || (demoTimer !== null && !port);
+  const type = ramp ? ramp.type : els.ksType.value;
+  els.rampMaxLabel.textContent = t(els.ksType.value === 'start' ? 'rampMax' : 'rampFrom');
+  els.rampPlusBtn.disabled = !canRun;
+  els.rampMinusBtn.disabled = !canRun;
+  els.ksRecordBtn.disabled = !ramp;
+  els.rampStopBtn.disabled = !ramp;
+  els.ksRecordBtn.textContent = t(type === 'start' ? 'ksRecordStart' : 'ksRecordStop');
+  els.ksStatus.textContent = ramp && testOutput
+    ? t('ksStatusRun', {
+        type: t(ramp.type === 'start' ? 'ksStart' : 'ksStop'),
+        dir: ramp.dir > 0 ? '+' : '−',
+        duty: `${Math.abs(testOutput.duty).toFixed(1)} %`,
+      })
+    : '';
+
+  const result = ksResults[els.ksMotor.value] ?? {};
   const supply = Number(els.ksSupply.value) || 12;
-  const show = (duty) => (duty == null ? '—' : `${duty.toFixed(1)} % (≈${(duty / 100 * supply).toFixed(2)} V)`);
-  els.ksTitle.textContent = t('ksTitle', { motor: t(TEST_TARGETS[selected]?.label ?? 'motor1') });
-  els.ksPlus.textContent = `+ ${show(result.plus)}`;
-  els.ksMinus.textContent = `− ${show(result.minus)}`;
-  els.ksResetBtn.disabled = result.plus == null && result.minus == null;
+  for (const [key, cell] of Object.entries(els.ksCells)) {
+    const duty = result[key];
+    cell.textContent = duty == null ? '—' : `${duty.toFixed(1)} % · ${(duty / 100 * supply).toFixed(2)} V`;
+  }
+  els.ksResetBtn.disabled = Object.keys(result).length === 0;
 }
 
 function log(message) {
@@ -727,20 +767,22 @@ function sendRun(p) {
   else if (demoTimer !== null) startSimTest(p);
 }
 
-// Ramp: duty climbs from 0 to the limit over the ramp time in the selected direction;
-// press Save the moment the motor starts turning
-function startRamp() {
+// Threshold ramps: 'start' climbs from 0 to the limit (press Save when the motor starts
+// turning); 'stop' falls from the limit to 0 (press Save when it stops)
+function startRamp(dir) {
   stopRamp();
-  const motor = Number(els.testPin.value);
+  const motor = Number(els.ksMotor.value);
+  const type = els.ksType.value;
   const max = Math.max(1, Math.min(100, Number(els.rampMax.value) || 50));
   const durationMs = Math.max(1, Number(els.rampTime.value) || 30) * 1000;
   const start = performance.now();
   const step = () => {
     const f = Math.min(1, (performance.now() - start) / durationMs);
-    sendRun({ motor, duty: f * max * testDirection, durationMs: 0 });
-    if (f >= 1) stopTest();   // reached the limit without a save
+    const duty = (type === 'start' ? f : 1 - f) * max;
+    sendRun({ motor, duty: duty * dir, durationMs: 0 });
+    if (f >= 1) stopTest();   // ran out without a save
   };
-  ramp = { timer: setInterval(step, 100) };
+  ramp = { timer: setInterval(step, 100), motor, dir, type };
   step();
   render();
 }
@@ -751,11 +793,12 @@ function stopRamp() {
   ramp = null;
 }
 
-function recordStartThreshold() {
-  if (!testOutput || testOutput.duty === 0 || isLedTarget(testOutput.motor)) return;
-  const entry = (ksResults[testOutput.motor] ??= {});
-  entry[testOutput.duty > 0 ? 'plus' : 'minus'] = Math.round(Math.abs(testOutput.duty) * 10) / 10;
-  try { localStorage.setItem(KS_STORAGE_KEY, JSON.stringify(ksResults)); } catch { /* storage unavailable */ }
+function recordThreshold() {
+  if (!ramp || !testOutput) return;
+  const entry = (ksResults[ramp.motor] ??= {});
+  const key = `${ramp.type}${ramp.dir > 0 ? 'Plus' : 'Minus'}`;
+  entry[key] = Math.round(Math.abs(testOutput.duty) * 10) / 10;
+  saveKs();
   stopTest();
 }
 
@@ -810,8 +853,7 @@ for (const b of els.testDirBtns) {
   b.addEventListener('click', () => {
     testDirection = Number(b.dataset.dir);
     // Flip a running motor straight away so the direction can be compared
-    if (ramp) startRamp();
-    else if (simTimer !== null || (port && testState === 1)) startTest();
+    if (!ramp && (simTimer !== null || (port && testState === 1))) startTest();
     else render();
   });
 }
@@ -821,12 +863,20 @@ renderTestPins();
 els.testDuty.addEventListener('change', () => {
   if (!ramp && (simTimer !== null || (port && testState === 1))) startTest();
 });
-els.rampStartBtn.addEventListener('click', startRamp);
-els.ksRecordBtn.addEventListener('click', recordStartThreshold);
+els.rampPlusBtn.addEventListener('click', () => startRamp(1));
+els.rampMinusBtn.addEventListener('click', () => startRamp(-1));
+els.rampStopBtn.addEventListener('click', stopTest);
+els.ksRecordBtn.addEventListener('click', recordThreshold);
+els.ksType.addEventListener('change', () => {
+  // A stop test should begin above the start threshold, so suggest a higher value
+  els.rampMax.value = els.ksType.value === 'start' ? 50 : 40;
+  render();
+});
+els.ksMotor.addEventListener('change', render);
 els.ksSupply.addEventListener('input', render);
 els.ksResetBtn.addEventListener('click', () => {
-  delete ksResults[els.testPin.value];
-  try { localStorage.setItem(KS_STORAGE_KEY, JSON.stringify(ksResults)); } catch { /* storage unavailable */ }
+  delete ksResults[els.ksMotor.value];
+  saveKs();
   render();
 });
 els.testPin.addEventListener('change', () => {
