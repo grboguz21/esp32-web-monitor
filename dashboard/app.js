@@ -44,6 +44,9 @@ const els = {
   testCard: document.getElementById('testCard'),
   testBadge: document.getElementById('testBadge'),
   testPin: document.getElementById('testPin'),
+  testFreq: document.getElementById('testFreq'),
+  testFreqHint: document.getElementById('testFreqHint'),
+  testDuration: document.getElementById('testDuration'),
   testDutyNow: document.getElementById('testDutyNow'),
   pwmChartTitle: document.getElementById('pwmChartTitle'),
   testHigh: document.getElementById('testHigh'),
@@ -127,7 +130,11 @@ const voltageChart = new LiveChart(document.getElementById('voltageChart'), {
 });
 
 // PWM test: a square wave of duty on one GPIO, reported back as PWMOUT
-const TEST_STATES = ['testIdle', 'testRunning', 'testWatchdog'];
+const TEST_STATES = ['testIdle', 'testRunning', 'testWatchdog', 'testDone'];
+const PWM_MIN_FREQ = 10;
+const PWM_MAX_FREQ = 40000;
+// Arduino-ESP32's analogWrite() default; replaced by what the firmware reports in PWMCFG
+let pwmDefaultFreq = 1000;
 const TEST_PIN_STORAGE_KEY = 'esp32-dashboard-test-pin';
 // Output-safe pins the firmware accepts, with their board label and role in this project
 const TEST_PINS = [
@@ -136,7 +143,7 @@ const TEST_PINS = [
   [25, 'D25', 'roleM1Ena'], [26, 'D26', 'roleM1In1'], [27, 'D27', 'roleM1In2'], [32, 'D32'], [33, 'D33'],
 ];
 let testState = null;    // null until the firmware reports PWMOUT, then 0 idle / 1 running / 2 watchdog
-let testOutput = null;   // { pin, duty }
+let testOutput = null;   // { pin, duty, freq, remainingMs }
 let simTimer = null;     // simulated output while demo data is on and no board is connected
 
 const pinLabel = (gpio) => TEST_PINS.find(([g]) => g === gpio)?.[1] ?? `GPIO${gpio}`;
@@ -144,7 +151,7 @@ const pinLabel = (gpio) => TEST_PINS.find(([g]) => g === gpio)?.[1] ?? `GPIO${gp
 const pwmChart = new LiveChart(document.getElementById('pwmChart'), {
   series: [{ key: 'pwm', label: () => t('tDuty'), short: '', color: '--accent' }],
   format: (d) => `${d.toFixed(0)} %`,
-  minSpan: 20,
+  range: [0, 100],
   windowMs: 20000,
   labels: chartLabels,
 });
@@ -370,10 +377,16 @@ function handleLine(line) {
     }
   }
 
-  if (type === 'PWMOUT' && fields.length === 3) {
-    const [state, pin, duty] = fields.map(Number);
+  if (type === 'PWMCFG' && fields.length === 2) {
+    pwmDefaultFreq = Number(fields[0]);
+    els.testFreq.value = pwmDefaultFreq;   // every connect starts from the board's default
+    return;
+  }
+
+  if (type === 'PWMOUT' && fields.length === 5) {
+    const [state, pin, duty, freq, remainingMs] = fields.map(Number);
     testState = state;
-    testOutput = { pin, duty };
+    testOutput = { pin, duty, freq, remainingMs };
     pwmChart.push('pwm', duty);
     return;
   }
@@ -550,7 +563,7 @@ function renderTest(state) {
   const supported = testState !== null;
   let badge;
   if (simTimer !== null) badge = ['testDemo', 'demo'];
-  else if (state === 'online' && supported) badge = [TEST_STATES[testState] ?? 'testIdle', ['', 'run', 'bad'][testState] ?? ''];
+  else if (state === 'online' && supported) badge = [TEST_STATES[testState] ?? 'testIdle', ['', 'run', 'bad', 'done'][testState] ?? ''];
   else if (demo) badge = ['testIdle', ''];
   else badge = ['sensorWaiting', ''];
 
@@ -564,7 +577,18 @@ function renderTest(state) {
   const running = simTimer !== null || testState === 1;
   const pin = running && testOutput?.pin >= 0 ? testOutput.pin : Number(els.testPin.value);
   els.pwmChartTitle.textContent = t('pwmChartTitle', { pin: pinLabel(pin) });
-  els.testDutyNow.textContent = running && testOutput ? `${testOutput.duty.toFixed(0)} %` : '';
+  const parts = [];
+  if (running && testOutput) {
+    parts.push(`${testOutput.duty.toFixed(0)} %`, `${testOutput.freq} Hz`);
+    if (testOutput.remainingMs > 0) parts.push(t('remaining', { s: (testOutput.remainingMs / 1000).toFixed(1) }));
+  }
+  els.testDutyNow.textContent = parts.join(' · ');
+
+  els.testDuration.placeholder = t('durationHint');
+  const freq = Number(els.testFreq.value);
+  els.testFreqHint.textContent = freq >= PWM_MIN_FREQ
+    ? t('freqHint', { p: (1000 / freq).toFixed(freq >= 1000 ? 2 : 1), f: pwmDefaultFreq })
+    : '';
 }
 
 function log(message) {
@@ -657,13 +681,15 @@ function readTestParams() {
     high: clampDuty(els.testHigh.value),
     low: clampDuty(els.testLow.value),
     period: Math.max(200, Number(els.testPeriod.value) || 2000),
+    freq: Math.max(PWM_MIN_FREQ, Math.min(PWM_MAX_FREQ, Math.round(Number(els.testFreq.value)) || pwmDefaultFreq)),
+    durationMs: Math.max(0, Math.round((Number(els.testDuration.value) || 0) * 1000)),
   };
 }
 
 function startTest() {
   const p = readTestParams();
   pwmChart.clear();
-  if (port) send(`PWM,${p.pin},${p.high},${p.low},${p.period}`);
+  if (port) send(`PWM,${p.pin},${p.high},${p.low},${p.period},${p.freq},${p.durationMs}`);
   else if (demoTimer !== null) startSimTest(p);
   render();
 }
@@ -679,8 +705,16 @@ function startSimTest(p) {
   stopSimTest();
   const start = performance.now();
   simTimer = setInterval(() => {
-    const highHalf = (performance.now() - start) % p.period < p.period / 2;
-    handleLine(`PWMOUT,1,${p.pin},${(highHalf ? p.high : p.low).toFixed(1)}`);
+    const elapsed = performance.now() - start;
+    if (p.durationMs > 0 && elapsed >= p.durationMs) {
+      stopSimTest();
+      testState = 3;
+      render();
+      return;
+    }
+    const highHalf = elapsed % p.period < p.period / 2;
+    const remaining = p.durationMs > 0 ? Math.round(p.durationMs - elapsed) : 0;
+    handleLine(`PWMOUT,1,${p.pin},${(highHalf ? p.high : p.low).toFixed(1)},${p.freq},${remaining}`);
   }, 40);
 }
 
@@ -703,6 +737,7 @@ els.testStopBtn.addEventListener('click', stopTest);
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') stopTest(); });
 
 renderTestPins();
+els.testFreq.addEventListener('input', render);
 els.testPin.addEventListener('change', () => {
   try { localStorage.setItem(TEST_PIN_STORAGE_KEY, els.testPin.value); } catch { /* storage unavailable */ }
   render();

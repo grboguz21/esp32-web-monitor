@@ -758,10 +758,14 @@ h2[data-help] {
 /* Motor test */
 .test-controls {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
-  align-items: end;
+  align-items: start;
   margin-bottom: 8px;
+}
+.test-controls .test-buttons { grid-column: span 2; align-self: end; }
+@media (max-width: 900px) {
+  .test-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 .field { display: flex; flex-direction: column; gap: 4px; font-size: 0.75rem; color: var(--muted); }
 .field input {
@@ -782,3 +786,5 @@ h2[data-help] {
 .chart-title { margin: 0; font-size: 0.85rem; }
 .chart-now { font-size: 0.85rem; font-weight: 700; font-variant-numeric: tabular-nums; }
 .badge[data-level="run"] { background: color-mix(in srgb, var(--online) 18%, transparent); color: var(--online); }
+.field-hint { font-size: 0.68rem; color: var(--muted); min-height: 1em; }
+.badge[data-level="done"] { background: var(--secondary-bg); color: var(--text); }

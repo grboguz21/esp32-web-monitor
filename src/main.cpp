@@ -43,14 +43,16 @@ constexpr size_t MOTOR_COUNT = sizeof(MOTOR_PINS) / sizeof(MOTOR_PINS[0]);
 // PWM test: a square wave of duty on any of these output-safe pins
 // (not UART0, not the I2C bus, not input-only or flash pins)
 constexpr int PWM_TEST_PINS[] = {2, 4, 5, 12, 13, 14, 15, 16, 17, 18, 19, 23, 25, 26, 27, 32, 33};
-constexpr uint32_t PWM_FREQ_HZ = 5000;
+constexpr uint32_t PWM_DEFAULT_FREQ_HZ = 1000;   // same as Arduino-ESP32's analogWrite() default
+constexpr uint32_t PWM_MIN_FREQ_HZ = 10;
+constexpr uint32_t PWM_MAX_FREQ_HZ = 40000;      // 10-bit LEDC tops out near 78 kHz
 constexpr uint8_t PWM_BITS = 10;
 constexpr uint32_t PWM_MAX = (1 << PWM_BITS) - 1;
 constexpr uint32_t PWM_UPDATE_MS = 5;
 constexpr uint32_t PWM_WATCHDOG_MS = 1000;   // stop if the dashboard goes quiet this long
 constexpr uint32_t PWM_REPORT_MS = 40;       // 25 Hz
 
-constexpr const char* FIRMWARE_VERSION = "0.7.0";
+constexpr const char* FIRMWARE_VERSION = "0.8.0";
 
 // Protocol (one message per line):
 //   ESP32 -> PC : HB,<uptime_ms>               heartbeat
@@ -61,12 +63,15 @@ constexpr const char* FIRMWARE_VERSION = "0.7.0";
 //                 POWER,<motor>,<voltage_V>,<current_mA>,<power_mW>,<min_voltage_V>,<max_current_mA>
 //                 (motor is 1 or 2; averages and extremes over the last report window)
 //                 POWER,<motor>,NA             no INA219 found for that motor
-//                 PWMOUT,<state>,<pin>,<duty>
-//                 (state 0 idle, 1 running, 2 stopped by the watchdog; duty in % on that pin)
+//                 PWMCFG,<default_freq_hz>,<resolution_bits>
+//                 PWMOUT,<state>,<pin>,<duty>,<freq_hz>,<remaining_ms>
+//                 (state 0 idle, 1 running, 2 stopped by the watchdog, 3 duration finished;
+//                  duty in % on that pin; remaining_ms is 0 when the test has no duration)
 //   PC -> ESP32 : HELLO?                       request HELLO and INFO
 //                 PING                         dashboard is alive (keeps the PWM test allowed)
-//                 PWM,<pin>,<high>,<low>,<period_ms>
-//                                              square wave of duty (0..100 %) on a GPIO
+//                 PWM,<pin>,<high>,<low>,<period_ms>,<freq_hz>,<duration_ms>
+//                                              square wave of duty (0..100 %) on a GPIO;
+//                                              duration_ms 0 runs until STOP
 //                 STOP                         stop the PWM test
 
 struct LoopStats {
@@ -82,13 +87,15 @@ portMUX_TYPE loopStatsMux = portMUX_INITIALIZER_UNLOCKED;
 
 TaskHandle_t mainLoopTask = nullptr;
 
-enum class TestState : uint8_t { Idle = 0, Running = 1, Watchdog = 2 };
+enum class TestState : uint8_t { Idle = 0, Running = 1, Watchdog = 2, Done = 3 };
 
 struct PwmTest {
   int pin = -1;
   float dutyHigh = 0;
   float dutyLow = 0;
   uint32_t periodMs = 2000;
+  uint32_t freqHz = PWM_DEFAULT_FREQ_HZ;
+  uint32_t durationMs = 0;   // 0 = until STOP
   uint32_t startMs = 0;
 };
 
@@ -164,10 +171,15 @@ void printInfo() {
                 resetReasonName(esp_reset_reason()));
 }
 
+void printPwmConfig() {
+  Serial.printf("PWMCFG,%lu,%u\n", (unsigned long)PWM_DEFAULT_FREQ_HZ, (unsigned)PWM_BITS);
+}
+
 void handleCommand(const String& cmd) {
   if (cmd == "HELLO?") {
     printHello();
     printInfo();
+    printPwmConfig();
   } else if (cmd == "PING") {
     portENTER_CRITICAL(&testMux);
     lastPingMs = millis();
@@ -179,14 +191,16 @@ void handleCommand(const String& cmd) {
   } else if (cmd.startsWith("PWM,")) {
     int pin;
     float high, low;
-    unsigned long period;
-    if (sscanf(cmd.c_str(), "PWM,%d,%f,%f,%lu", &pin, &high, &low, &period) == 4 &&
-        isPwmTestPin(pin) && period >= 100) {
+    unsigned long period, freq, duration;
+    if (sscanf(cmd.c_str(), "PWM,%d,%f,%f,%lu,%lu,%lu", &pin, &high, &low, &period, &freq, &duration) == 6 &&
+        isPwmTestPin(pin) && period >= 100 && freq >= PWM_MIN_FREQ_HZ && freq <= PWM_MAX_FREQ_HZ) {
       portENTER_CRITICAL(&testMux);
       pwmTest.pin = pin;
       pwmTest.dutyHigh = constrain(high, 0.0f, 100.0f);
       pwmTest.dutyLow = constrain(low, 0.0f, 100.0f);
       pwmTest.periodMs = period;
+      pwmTest.freqHz = freq;
+      pwmTest.durationMs = duration;
       pwmTest.startMs = millis();
       lastPingMs = millis();
       testState = TestState::Running;
@@ -335,11 +349,17 @@ void sendPwmTest() {
 
   portENTER_CRITICAL(&testMux);
   TestState state = testState;
-  int pin = pwmTest.pin;
+  PwmTest test = pwmTest;
   float duty = outputDuty;
   portEXIT_CRITICAL(&testMux);
 
-  Serial.printf("PWMOUT,%u,%d,%.1f\n", (unsigned)state, pin, duty);
+  uint32_t remaining = 0;
+  if (state == TestState::Running && test.durationMs > 0) {
+    uint32_t elapsed = now - test.startMs;
+    remaining = elapsed < test.durationMs ? test.durationMs - elapsed : 0;
+  }
+  Serial.printf("PWMOUT,%u,%d,%.1f,%lu,%lu\n", (unsigned)state, test.pin, duty,
+                (unsigned long)test.freqHz, (unsigned long)remaining);
 }
 
 // Runs on core 0 and owns the serial port and I2C bus, so this I/O never slows loop() down
@@ -348,6 +368,7 @@ void telemetryTask(void*) {
   Wire.setClock(I2C_CLOCK_HZ);
   printHello();
   printInfo();
+  printPwmConfig();
   for (;;) {
     readCommands();
     sendHeartbeat();
@@ -392,6 +413,7 @@ void releasePin(int pin) {
 void runPwmTest() {
   static uint32_t lastUpdate = 0;
   static int activePin = -1;   // pin currently attached to the PWM peripheral
+  static uint32_t activeFreq = 0;
   uint32_t now = millis();
   if (now - lastUpdate < PWM_UPDATE_MS) return;
   lastUpdate = now;
@@ -400,16 +422,21 @@ void runPwmTest() {
   if (testState == TestState::Running && now - lastPingMs > PWM_WATCHDOG_MS) {
     testState = TestState::Watchdog;
   }
+  if (testState == TestState::Running && pwmTest.durationMs > 0 &&
+      now - pwmTest.startMs >= pwmTest.durationMs) {
+    testState = TestState::Done;
+  }
   PwmTest test = pwmTest;
   bool running = testState == TestState::Running;
   portEXIT_CRITICAL(&testMux);
 
   int wantPin = running ? test.pin : -1;
-  if (wantPin != activePin) {
+  if (wantPin != activePin || (wantPin >= 0 && test.freqHz != activeFreq)) {
     releasePin(activePin);
     activePin = -1;
-    if (wantPin >= 0 && ledcAttach(wantPin, PWM_FREQ_HZ, PWM_BITS)) {
+    if (wantPin >= 0 && ledcAttach(wantPin, test.freqHz, PWM_BITS)) {
       activePin = wantPin;
+      activeFreq = test.freqHz;
       // Driving a motor input: let that L298N channel conduct
       int motor = motorForPin(wantPin);
       if (motor >= 0) digitalWrite(MOTOR_PINS[motor].ena, HIGH);

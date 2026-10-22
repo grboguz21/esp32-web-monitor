@@ -3,12 +3,13 @@
 // crosshair and every series' value at that moment. Colors come from CSS tokens, so it
 // follows the light/dark theme.
 class LiveChart {
-  constructor(container, { series, legend, format, tickFormat = format, minSpan, windowMs = 60000, labels }) {
+  constructor(container, { series, legend, format, tickFormat = format, minSpan, range, windowMs = 60000, labels }) {
     this.container = container;
     this.series = series;       // [{ key, label, short, color: '--series-1' }]
     this.format = format;
     this.tickFormat = tickFormat;
     this.minSpan = minSpan;     // smallest y range, so a flat signal is not blown up into noise
+    this.range = range;         // optional fixed [min, max] for the y axis
     this.windowMs = windowMs;
     this.labels = labels;       // { empty(), axis(seconds), ago(seconds) }
     this.data = new Map(series.map((s) => [s.key, []]));
@@ -102,6 +103,7 @@ class LiveChart {
         lo = mid - this.minSpan / 2;
         hi = mid + this.minSpan / 2;
       }
+      if (this.range) [lo, hi] = this.range;
       step = niceStep((hi - lo) / 3);
       lo = Math.floor(lo / step) * step;
       hi = Math.ceil(hi / step) * step;

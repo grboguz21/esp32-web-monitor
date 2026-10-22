@@ -275,6 +275,10 @@
             <label class="field"><span data-i18n="testPin">Pin</span>
               <select id="testPin"></select>
             </label>
+            <label class="field"><span data-i18n="testFreq">PWM frequency (Hz)</span>
+              <input id="testFreq" type="number" min="10" max="40000" step="100" value="1000">
+              <small class="field-hint" id="testFreqHint"></small>
+            </label>
             <label class="field"><span data-i18n="testHigh">High duty (%)</span>
               <input id="testHigh" type="number" min="0" max="100" step="5" value="60">
             </label>
@@ -283,6 +287,9 @@
             </label>
             <label class="field"><span data-i18n="testPeriod">Period (ms)</span>
               <input id="testPeriod" type="number" min="200" step="100" value="2000">
+            </label>
+            <label class="field"><span data-i18n="testDuration">Duration (s)</span>
+              <input id="testDuration" type="number" min="0" step="1" value="">
             </label>
             <div class="test-buttons">
               <button id="testStartBtn" class="btn" data-i18n="testStart">Start</button>
