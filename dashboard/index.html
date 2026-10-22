@@ -332,9 +332,12 @@
             </div>
             <div class="enc-actions">
               <button class="btn btn-secondary" data-efield="zero" data-i18n="encZero">Zero</button>
-              <button class="btn btn-secondary" data-efield="oneTurn" data-i18n="encOneTurn">I turned it one rev</button>
+              <label class="ks-supply enc-turns"><span data-i18n="encTurnsInput">Turns</span>
+                <input type="number" min="1" step="1" value="10" data-efield="turnsInput">
+              </label>
+              <button class="btn btn-secondary" data-efield="oneTurn" data-i18n="encTurned">I turned it</button>
               <label class="ks-supply"><span data-i18n="encCpr">Counts per rev</span>
-                <input type="number" min="0" step="1" data-efield="cpr">
+                <input type="number" min="0" step="0.1" data-efield="cpr">
               </label>
             </div>
           </div>
@@ -361,9 +364,12 @@
             </div>
             <div class="enc-actions">
               <button class="btn btn-secondary" data-efield="zero" data-i18n="encZero">Zero</button>
-              <button class="btn btn-secondary" data-efield="oneTurn" data-i18n="encOneTurn">I turned it one rev</button>
+              <label class="ks-supply enc-turns"><span data-i18n="encTurnsInput">Turns</span>
+                <input type="number" min="1" step="1" value="10" data-efield="turnsInput">
+              </label>
+              <button class="btn btn-secondary" data-efield="oneTurn" data-i18n="encTurned">I turned it</button>
               <label class="ks-supply"><span data-i18n="encCpr">Counts per rev</span>
-                <input type="number" min="0" step="1" data-efield="cpr">
+                <input type="number" min="0" step="0.1" data-efield="cpr">
               </label>
             </div>
           </div>

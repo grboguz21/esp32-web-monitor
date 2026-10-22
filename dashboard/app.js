@@ -873,16 +873,18 @@ for (const row of els.encCard.querySelectorAll('[data-emotor]')) {
   const m = Number(row.dataset.emotor);
   const field = (name) => row.querySelector(`[data-efield="${name}"]`);
   field('zero').addEventListener('click', () => zeroEncoder(m));
+  // Turning several revolutions averages out the fractional counts of a non-integer gear ratio
   field('oneTurn').addEventListener('click', () => {
-    const count = Math.abs(Math.round(encData[m].count ?? 0));
+    const count = Math.abs(encData[m].count ?? 0);
+    const turns = Math.max(1, Math.round(Number(field('turnsInput').value) || 1));
     if (!count) return;
-    encSettings.cpr[m] = count;
+    encSettings.cpr[m] = Math.round((count / turns) * 100) / 100;
     saveEnc();
     encChart.clear();
     render();
   });
   field('cpr').addEventListener('change', () => {
-    const cpr = Math.round(Number(field('cpr').value));
+    const cpr = Math.round(Number(field('cpr').value) * 100) / 100;
     if (cpr > 0) encSettings.cpr[m] = cpr;
     else delete encSettings.cpr[m];
     saveEnc();
