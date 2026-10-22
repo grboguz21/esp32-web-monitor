@@ -815,3 +815,31 @@ h2[data-help] {
 .dir-switch button[aria-pressed="true"] { background: var(--accent); color: var(--accent-text); }
 .dir-switch button:disabled { opacity: 0.4; cursor: not-allowed; }
 .dir-switch button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* Start threshold (kS) */
+.ramp-controls { grid-template-columns: repeat(4, minmax(0, 1fr)); align-items: end; }
+@media (max-width: 900px) { .ramp-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.btn-record { background: var(--online); color: #fff; }
+.ks-results {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 20px;
+  margin: 4px 0 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--secondary-bg);
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+.ks-title { font-weight: 700; }
+.ks-supply { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; color: var(--muted); font-size: 0.75rem; }
+.ks-supply input {
+  width: 70px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}

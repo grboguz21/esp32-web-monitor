@@ -67,7 +67,8 @@
         <nav class="tabs" role="tablist">
           <button class="tab" role="tab" data-tab="dashboard" aria-selected="true" data-i18n="tabDashboard">Dashboard</button>
           <button class="tab" role="tab" data-tab="power" aria-selected="false" data-i18n="tabPower">Power</button>
-        <button class="tab" role="tab" data-tab="board" aria-selected="false" data-i18n="tabBoard">Board pinout</button>
+          <button class="tab" role="tab" data-tab="motor" aria-selected="false" data-i18n="tabMotor">Motor test</button>
+          <button class="tab" role="tab" data-tab="board" aria-selected="false" data-i18n="tabBoard">Board pinout</button>
         </nav>
         <div class="toolbar">
           <div class="lang-switch" role="group" aria-label="Language">
@@ -266,6 +267,9 @@
           </section>
         </div>
 
+      </div>
+
+      <div class="tab-panel" data-panel="motor" hidden>
         <section class="card motor-test" id="testCard">
           <div class="card-head">
             <h2 data-i18n="testTitle">Motor direction test</h2>
@@ -292,6 +296,26 @@
               <button id="testStopBtn" class="btn btn-danger" data-i18n="testStop">Stop</button>
             </div>
           </div>
+          <div class="test-controls ramp-controls">
+            <label class="field"><span data-i18n="rampMax">Ramp up to (%)</span>
+              <input id="rampMax" type="number" min="1" max="100" step="5" value="50">
+            </label>
+            <label class="field"><span data-i18n="rampTime">Ramp time (s)</span>
+              <input id="rampTime" type="number" min="1" step="1" value="30">
+            </label>
+            <button id="rampStartBtn" class="btn btn-secondary" data-i18n="rampStart">Start ramp</button>
+            <button id="ksRecordBtn" class="btn btn-record" data-i18n="ksRecord">It moved, save</button>
+          </div>
+          <div class="ks-results">
+            <span class="ks-title" id="ksTitle"></span>
+            <span id="ksPlus"></span>
+            <span id="ksMinus"></span>
+            <label class="ks-supply"><span data-i18n="ksSupply">Supply (V)</span>
+              <input id="ksSupply" type="number" min="1" max="30" step="0.1" value="12">
+            </label>
+            <button id="ksResetBtn" class="btn btn-ghost" data-i18n="ksReset">Clear</button>
+          </div>
+          <p class="test-warning" data-i18n="ksHint">Start a ramp and press Save the moment the motor starts turning. Do it for + and −.</p>
           <p class="test-warning" data-i18n="testWarning">The selected motor will spin.</p>
           <div class="card-head">
             <h3 class="chart-title" id="pwmChartTitle"></h3>
