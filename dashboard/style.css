@@ -327,6 +327,7 @@ select:disabled { opacity: 0.6; }
 }
 .badge[data-level="ok"]  { background: color-mix(in srgb, var(--online) 18%, transparent); color: var(--online); }
 .badge[data-level="bad"] { background: var(--banner-bg); color: var(--banner-text); }
+.badge[data-level="demo"] { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
 
 /* Health */
 .card-note { color: var(--muted); font-size: 0.72rem; }

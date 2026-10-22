@@ -81,6 +81,8 @@ let powerSensor = 'unknown';  // 'unknown' (no POWER yet), 'missing' or 'ok'
 let minVoltage = null;  // extremes since connecting or the last reset
 let maxCurrentMa = null;
 
+let demoTimer = null;   // fake POWER data for previewing the Power card without a sensor
+
 const chartLabels = {
   empty: () => t('noData'),
   axis: (s) => (s === 0 ? t('now') : t('axisAgo', { n: s })),
@@ -152,6 +154,7 @@ async function connect() {
     log(t('log.connectFailed', { msg: err.message }));
     return;
   }
+  stopDemo();
   port = selected;
   log(t('log.opened', { port: portLabel(port) }));
   render();
@@ -211,12 +214,7 @@ async function closePort() {
   device = null;
   info = null;
   health = null;
-  power = null;
-  currentChart.clear();
-  voltageChart.clear();
-  powerSensor = 'unknown';
-  minVoltage = null;
-  maxCurrentMa = null;
+  resetPowerData();
   uptimeMs = null;
   lastBeatAt = 0;
   log(t('log.closed'));
@@ -420,8 +418,15 @@ function formatPower(mw) {
 
 // The same Power card appears on the Dashboard and the Power tab
 function renderPower(state) {
-  const sensor = state === 'online' ? powerSensor : 'unknown';
-  const badge = { ok: ['sensorOk', 'ok'], missing: ['sensorMissing', 'bad'], unknown: ['sensorWaiting', ''] }[sensor];
+  const demo = demoTimer !== null;
+  const live = state === 'online' || demo;
+  const sensor = demo ? 'demo' : state === 'online' ? powerSensor : 'unknown';
+  const badge = {
+    ok: ['sensorOk', 'ok'],
+    missing: ['sensorMissing', 'bad'],
+    unknown: ['sensorWaiting', ''],
+    demo: ['sensorDemo', 'demo'],
+  }[sensor];
   const values = power
     ? {
         voltage: `${power.voltage.toFixed(2)} V`,
@@ -435,12 +440,14 @@ function renderPower(state) {
   for (const card of els.powerCards) {
     const field = (name) => card.querySelector(`[data-pfield="${name}"]`);
     card.dataset.sensor = sensor;
-    card.toggleAttribute('data-stale', state !== 'online');
+    card.toggleAttribute('data-stale', !live);
     field('badge').textContent = t(badge[0]);
     if (badge[1]) field('badge').dataset.level = badge[1];
     else delete field('badge').dataset.level;
     field('hint').hidden = sensor !== 'missing';
     field('reset').disabled = !power;
+    field('demo').textContent = demo ? t('demoStop') : t('demoStart');
+    field('demo').disabled = !!port;
     for (const [name, text] of Object.entries(values)) field(name).textContent = text;
   }
 
@@ -476,6 +483,51 @@ if (!('serial' in navigator)) {
 }
 
 els.clearLogBtn.addEventListener('click', () => { els.log.textContent = ''; });
+// ---------- Demo data ----------
+
+// Fakes the firmware's POWER messages: ~300 mA idle, a load bump every ~15 s
+// and a short stall now and then, with the supply sagging as current rises
+function startDemo() {
+  resetPowerData();
+  let tick = 0;
+  demoTimer = setInterval(() => {
+    tick++;
+    const phase = tick % 60;
+    const load = phase > 30 && phase < 50 ? 450 * Math.sin(((phase - 30) / 20) * Math.PI) : 0;
+    const stall = tick % 160 > 152 ? 750 : 0;
+    const currentMa = 290 + 20 * Math.sin(tick / 5) + 12 * Math.random() + load + stall;
+    const voltage = 12.02 - currentMa * 0.0006 + 0.01 * (Math.random() - 0.5);
+    const minV = voltage - 0.02 * Math.random();
+    const maxMa = currentMa + 15 * Math.random();
+    handleLine(`POWER,${voltage.toFixed(3)},${currentMa.toFixed(1)},${(voltage * currentMa).toFixed(1)},` +
+               `${minV.toFixed(3)},${maxMa.toFixed(1)}`);
+    render();
+  }, 250);
+  render();
+}
+
+function stopDemo() {
+  if (demoTimer === null) return;
+  clearInterval(demoTimer);
+  demoTimer = null;
+  resetPowerData();
+  render();
+}
+
+function resetPowerData() {
+  power = null;
+  powerSensor = 'unknown';
+  minVoltage = null;
+  maxCurrentMa = null;
+  currentChart.clear();
+  voltageChart.clear();
+}
+
+document.querySelectorAll('[data-pfield="demo"]').forEach((b) => b.addEventListener('click', () => {
+  if (demoTimer === null) startDemo();
+  else stopDemo();
+}));
+
 document.querySelectorAll('[data-pfield="reset"]').forEach((b) => b.addEventListener('click', () => {
   minVoltage = power?.voltage ?? null;
   maxCurrentMa = power?.currentMa ?? null;
