@@ -75,11 +75,36 @@ class LiveChart {
     ctx.clearRect(0, 0, w, h);
     ctx.font = '11px system-ui, sans-serif';
 
-    const pad = { left: 64, right: 34, top: 10, bottom: 24 };
+    const active = this.series.filter((s) => this.data.get(s.key).length > 0);
+
+    // Shared y scale with round tick steps
+    let lo = 0;
+    let hi = 1;
+    let step = 1;
+    const ticks = [];
+    if (active.length) {
+      const values = active.flatMap((s) => this.data.get(s.key).map((p) => p.v));
+      lo = Math.min(...values);
+      hi = Math.max(...values);
+      if (hi - lo < this.minSpan) {
+        const mid = (hi + lo) / 2;
+        lo = mid - this.minSpan / 2;
+        hi = mid + this.minSpan / 2;
+      }
+      step = niceStep((hi - lo) / 3);
+      lo = Math.floor(lo / step) * step;
+      hi = Math.ceil(hi / step) * step;
+      for (let v = lo; v <= hi + step / 2; v += step) ticks.push({ v, label: this.tickFormat(v) });
+    }
+
+    // Left margin fits the widest tick label
+    const labelWidth = Math.max(0, ...ticks.map((tk) => ctx.measureText(tk.label).width));
+    const pad = { left: Math.max(48, Math.ceil(labelWidth) + 14), right: 34, top: 10, bottom: 24 };
     const pw = w - pad.left - pad.right;
     const ph = h - pad.top - pad.bottom;
     const now = performance.now();
     const x = (t) => pad.left + (1 - (now - t) / this.windowMs) * pw;
+    const y = (v) => pad.top + (1 - (v - lo) / (hi - lo)) * ph;
 
     // Time axis: -60 s ... now
     ctx.fillStyle = token('--muted');
@@ -91,7 +116,6 @@ class LiveChart {
       ctx.fillText(this.labels.axis(s), px, h - 6);
     }
 
-    const active = this.series.filter((s) => this.data.get(s.key).length > 0);
     if (active.length === 0) {
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
@@ -100,31 +124,17 @@ class LiveChart {
       return;
     }
 
-    // Shared y scale with round tick steps
-    const values = active.flatMap((s) => this.data.get(s.key).map((p) => p.v));
-    let lo = Math.min(...values);
-    let hi = Math.max(...values);
-    if (hi - lo < this.minSpan) {
-      const mid = (hi + lo) / 2;
-      lo = mid - this.minSpan / 2;
-      hi = mid + this.minSpan / 2;
-    }
-    const step = niceStep((hi - lo) / 3);
-    lo = Math.floor(lo / step) * step;
-    hi = Math.ceil(hi / step) * step;
-    const y = (v) => pad.top + (1 - (v - lo) / (hi - lo)) * ph;
-
     ctx.strokeStyle = token('--border');
     ctx.lineWidth = 1;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
-    for (let v = lo; v <= hi + step / 2; v += step) {
-      const py = Math.round(y(v)) + 0.5;
+    for (const tk of ticks) {
+      const py = Math.round(y(tk.v)) + 0.5;
       ctx.beginPath();
       ctx.moveTo(pad.left, py);
       ctx.lineTo(w - pad.right, py);
       ctx.stroke();
-      ctx.fillText(this.tickFormat(v), pad.left - 8, py);
+      ctx.fillText(tk.label, pad.left - 8, py);
     }
 
     // Lines, clipped to the plot so the oldest point slides out cleanly

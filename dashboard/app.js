@@ -41,6 +41,15 @@ const els = {
   hLoopHz: document.getElementById('hLoopHz'),
   hStack: document.getElementById('hStack'),
   powerCards: document.querySelectorAll('.power'),
+  testCard: document.getElementById('testCard'),
+  testBadge: document.getElementById('testBadge'),
+  testMask: document.getElementById('testMask'),
+  testHigh: document.getElementById('testHigh'),
+  testLow: document.getElementById('testLow'),
+  testPeriod: document.getElementById('testPeriod'),
+  testCpr: document.getElementById('testCpr'),
+  testStartBtn: document.getElementById('testStartBtn'),
+  testStopBtn: document.getElementById('testStopBtn'),
   log: document.getElementById('log'),
   clearLogBtn: document.getElementById('clearLogBtn'),
 };
@@ -114,6 +123,42 @@ const voltageChart = new LiveChart(document.getElementById('voltageChart'), {
   minSpan: 0.5,
   labels: chartLabels,
 });
+
+// Square-wave motor test: latest MOTORS report per motor
+const TEST_STATES = ['testIdle', 'testRunning', 'testWatchdog'];
+const CPR_STORAGE_KEY = 'esp32-dashboard-cpr';
+const newMotorRun = () => ({ duty: null, count: 0, cps: 0 });
+const motorRun = { 1: newMotorRun(), 2: newMotorRun() };
+let testState = null;   // null until the firmware reports MOTORS, then 0 idle / 1 running / 2 watchdog
+let simTimer = null;    // simulated test while demo data is on and no board is connected
+
+function countsPerRev() {
+  const cpr = Number(els.testCpr.value);
+  return cpr > 0 ? cpr : 0;
+}
+
+function formatSpeed(cps) {
+  const cpr = countsPerRev();
+  return cpr ? `${Math.round((cps * 60) / cpr)} RPM` : `${Math.round(cps)} ${t('cpsUnit')}`;
+}
+
+const dutyChart = new LiveChart(document.getElementById('dutyChart'), {
+  series: motorSeries,
+  legend: document.getElementById('dutyLegend'),
+  format: (d) => `${d.toFixed(0)} %`,
+  minSpan: 20,
+  windowMs: 20000,
+  labels: chartLabels,
+});
+const speedChart = new LiveChart(document.getElementById('speedChart'), {
+  series: motorSeries,
+  legend: document.getElementById('speedLegend'),
+  format: (cps) => formatSpeed(cps),
+  minSpan: 100,
+  windowMs: 20000,
+  labels: chartLabels,
+});
+
 let uptimeMs = null;
 let lastBeatAt = 0;     // performance.now() of the last heartbeat
 
@@ -230,20 +275,27 @@ async function closePort() {
   info = null;
   health = null;
   resetPowerData();
+  resetTestData();
   uptimeMs = null;
   lastBeatAt = 0;
   log(t('log.closed'));
   await refreshPorts();
 }
 
-async function send(text) {
-  if (!port?.writable) return;
-  const writer = port.writable.getWriter();
-  try {
-    await writer.write(new TextEncoder().encode(text + '\n'));
-  } finally {
-    writer.releaseLock();
-  }
+// Writes are queued: only one writer may hold the port at a time, and PING runs on a timer
+let sendQueue = Promise.resolve();
+
+function send(text) {
+  sendQueue = sendQueue.then(async () => {
+    if (!port?.writable) return;
+    const writer = port.writable.getWriter();
+    try {
+      await writer.write(new TextEncoder().encode(text + '\n'));
+    } finally {
+      writer.releaseLock();
+    }
+  }).catch(() => {});
+  return sendQueue;
 }
 
 // ---------- Protocol ----------
@@ -315,6 +367,17 @@ function handleLine(line) {
     }
   }
 
+  if (type === 'MOTORS' && fields.length === 7) {
+    const [state, d1, c1, s1, d2, c2, s2] = fields.map(Number);
+    testState = state;
+    for (const [m, duty, count, cps] of [[1, d1, c1, s1], [2, d2, c2, s2]]) {
+      motorRun[m] = { duty, count, cps };
+      dutyChart.push(m, duty);
+      speedChart.push(m, cps);
+    }
+    return;
+  }
+
   // Anything else (boot messages, debug prints) goes to the log as-is
   log(line);
 }
@@ -356,6 +419,7 @@ function render() {
   renderInfo();
   renderHealth(state);
   renderPower(state);
+  renderTest(state);
 }
 
 function formatBytes(n) {
@@ -480,6 +544,35 @@ function renderPower(state) {
   }
 }
 
+function renderTest(state) {
+  const demo = demoTimer !== null;
+  const live = state === 'online' || demo;
+  const supported = testState !== null;
+  let badge;
+  if (simTimer !== null) badge = ['testDemo', 'demo'];
+  else if (state === 'online' && supported) badge = [TEST_STATES[testState] ?? 'testIdle', ['', 'run', 'bad'][testState] ?? ''];
+  else if (demo) badge = ['testIdle', ''];
+  else badge = ['sensorWaiting', ''];
+
+  els.testCard.toggleAttribute('data-stale', !live);
+  els.testBadge.textContent = t(badge[0]);
+  if (badge[1]) els.testBadge.dataset.level = badge[1];
+  else delete els.testBadge.dataset.level;
+  els.testStartBtn.disabled = !((state === 'online' && supported) || (demo && !port));
+  els.testStopBtn.disabled = !(simTimer !== null || (port && testState === 1));
+
+  const cpr = countsPerRev();
+  for (const row of els.testCard.querySelectorAll('[data-tmotor]')) {
+    const m = motorRun[row.dataset.tmotor];
+    const field = (name) => row.querySelector(`[data-tfield="${name}"]`);
+    const has = m.duty !== null;
+    field('duty').textContent = has ? `${m.duty.toFixed(0)} %` : '—';
+    field('speed').textContent = has ? formatSpeed(m.cps) : '—';
+    field('count').textContent = has ? Math.round(m.count).toLocaleString() : '—';
+    field('revs').textContent = has && cpr ? t('revs', { n: (m.count / cpr).toFixed(1) }) : '—';
+  }
+}
+
 function log(message) {
   const time = new Date().toLocaleTimeString(I18N.lang === 'tr' ? 'tr-TR' : 'en-GB');
   const lines = (els.log.textContent + `[${time}] ${message}\n`).split('\n');
@@ -549,7 +642,9 @@ function stopDemo() {
   if (demoTimer === null) return;
   clearInterval(demoTimer);
   demoTimer = null;
+  stopSimTest();
   resetPowerData();
+  resetTestData();
   render();
 }
 
@@ -558,6 +653,93 @@ function resetPowerData() {
   currentChart.clear();
   voltageChart.clear();
 }
+
+// ---------- Motor test ----------
+
+function readTestParams() {
+  const clampDuty = (v) => Math.max(-100, Math.min(100, Number(v) || 0));
+  return {
+    mask: Number(els.testMask.value),
+    high: clampDuty(els.testHigh.value),
+    low: clampDuty(els.testLow.value),
+    period: Math.max(200, Number(els.testPeriod.value) || 2000),
+  };
+}
+
+function startTest() {
+  const p = readTestParams();
+  dutyChart.clear();
+  speedChart.clear();
+  if (port) send(`SQW,${p.mask},${p.high},${p.low},${p.period}`);
+  else if (demoTimer !== null) startSimTest(p);
+  render();
+}
+
+function stopTest() {
+  if (port) send('STOP');
+  stopSimTest();
+  render();
+}
+
+// Demo only: a first-order motor model (dead band, lag) answering the square wave,
+// reported through the same MOTORS line the firmware sends
+function startSimTest(p) {
+  stopSimTest();
+  const MAX_CPS = 4000;
+  const DEAD_BAND = 15;   // % duty before the motor starts to turn
+  const TAU_S = 0.15;
+  const sim = { 1: { speed: 0, count: 0 }, 2: { speed: 0, count: 0 } };
+  const start = performance.now();
+  let last = start;
+  simTimer = setInterval(() => {
+    const now = performance.now();
+    const dt = (now - last) / 1000;
+    last = now;
+    const highHalf = (now - start) % p.period < p.period / 2;
+    const parts = [];
+    for (const m of MOTORS) {
+      const duty = p.mask & (1 << (m - 1)) ? (highHalf ? p.high : p.low) : 0;
+      const drive = Math.max(0, Math.abs(duty) - DEAD_BAND) / (100 - DEAD_BAND);
+      const target = Math.sign(duty) * drive * MAX_CPS * (m === 2 ? 0.92 : 1);
+      sim[m].speed += (target - sim[m].speed) * Math.min(1, dt / TAU_S);
+      sim[m].count += sim[m].speed * dt;
+      const noise = Math.abs(sim[m].speed) > 1 ? (Math.random() - 0.5) * 40 : 0;
+      parts.push(duty.toFixed(1), Math.round(sim[m].count), Math.round(sim[m].speed + noise));
+    }
+    handleLine(`MOTORS,1,${parts.join(',')}`);
+  }, 40);
+}
+
+function stopSimTest() {
+  if (simTimer === null) return;
+  clearInterval(simTimer);
+  simTimer = null;
+  testState = 0;
+  for (const m of MOTORS) motorRun[m] = { ...motorRun[m], duty: 0, cps: 0 };
+}
+
+function resetTestData() {
+  testState = null;
+  for (const m of MOTORS) motorRun[m] = newMotorRun();
+  dutyChart.clear();
+  speedChart.clear();
+}
+
+els.testStartBtn.addEventListener('click', startTest);
+els.testStopBtn.addEventListener('click', stopTest);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') stopTest(); });
+
+try {
+  const savedCpr = localStorage.getItem(CPR_STORAGE_KEY);
+  if (savedCpr) els.testCpr.value = savedCpr;
+} catch { /* storage unavailable */ }
+els.testCpr.addEventListener('input', () => {
+  try { localStorage.setItem(CPR_STORAGE_KEY, els.testCpr.value); } catch { /* storage unavailable */ }
+  render();
+});
+
+// Tells the firmware the page is alive; without it the motors stop after 1 s
+setInterval(() => { if (port) send('PING'); }, 200);
 
 document.querySelectorAll('[data-pfield="demo"]').forEach((b) => b.addEventListener('click', () => {
   if (demoTimer === null) startDemo();
@@ -632,6 +814,8 @@ I18N.onChange(() => {
   renderThemeButton();
   currentChart.renderLegend();
   voltageChart.renderLegend();
+  dutyChart.renderLegend();
+  speedChart.renderLegend();
   render();
   if ('serial' in navigator) refreshPorts();
 });

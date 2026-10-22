@@ -342,7 +342,8 @@ select:disabled { opacity: 0.6; }
 
 .health { transition: opacity 0.2s; }
 .health[data-stale],
-.power[data-stale] { opacity: 0.45; }
+.power[data-stale],
+.motor-test[data-stale] { opacity: 0.45; }
 
 .card-actions { display: flex; align-items: center; gap: 8px; }
 .power-hint {
@@ -751,3 +752,31 @@ h2[data-help] {
 .chart-tip-time { color: var(--muted); margin-bottom: 2px; }
 .chart-tip div:not(.chart-tip-time) { display: flex; align-items: center; gap: 6px; }
 .chart-tip i { width: 8px; height: 8px; border-radius: 2px; }
+
+/* Motor test */
+.test-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 8px;
+}
+.field { display: flex; flex-direction: column; gap: 4px; font-size: 0.75rem; color: var(--muted); }
+.field input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+.test-buttons { display: flex; gap: 8px; }
+.test-buttons .btn { flex: 1; }
+.btn-danger { background: var(--avoid); color: #fff; }
+.test-warning { margin: 0 0 14px; font-size: 0.75rem; color: var(--muted); }
+.test-charts { margin-top: 16px; }
+.test-charts h3 { margin: 0; font-size: 0.85rem; }
+.badge[data-level="run"] { background: color-mix(in srgb, var(--online) 18%, transparent); color: var(--online); }
