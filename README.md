@@ -15,9 +15,15 @@ What it does right now:
 
 ## Trying it out
 
-Flash the firmware with PlatformIO (`pio run -t upload`), open `dashboard/index.html` in Chrome, click **Add port…**, pick the board and hit **Connect**.
+1. Open this folder in VS Code with the PlatformIO extension installed.
+2. Plug the ESP32 in with a USB cable and click **Upload** (the → arrow in the bottom bar).
+3. If the PlatformIO serial monitor is open, close it. Only one program can use the port.
+4. Open `dashboard/index.html` in Chrome. Double-clicking usually works. If it opens in another browser, right-click the file and choose **Open with → Google Chrome**, or just drag it into a Chrome window.
+5. Click **Add port…**, pick your board from the list (mine shows up as *USB Serial*) and click **Connect**.
+6. The dot in the top-left turns green when the board is talking to the page.
 
-Close the PlatformIO serial monitor first, otherwise the port is busy.
+It only works in Chrome or Edge. Firefox and Safari don't support Web Serial.
+Before uploading new code, click **Disconnect** so the port is free again.
 
 On Linux, if the board doesn't show up at all, `brltty` is probably grabbing it. `sudo apt remove brltty` fixed it for me.
 
