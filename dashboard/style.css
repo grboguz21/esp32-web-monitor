@@ -41,6 +41,10 @@
   --module: #23272e;
   --ic: #0f141b;
 
+  /* Chart series (validated categorical pair: blue, orange) */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+
   color-scheme: light;
 }
 
@@ -71,6 +75,8 @@
     --c-input: #22d3ee;
     --c-strap: #fbbf24;
     --c-led: #38bdf8;
+    --series-1: #3987e5;
+    --series-2: #d95926;
     color-scheme: dark;
   }
 }
@@ -100,6 +106,8 @@
   --c-input: #22d3ee;
   --c-strap: #fbbf24;
   --c-led: #38bdf8;
+  --series-1: #3987e5;
+  --series-2: #d95926;
   color-scheme: dark;
 }
 
@@ -697,6 +705,7 @@ h2[data-help] {
 .chart canvas { display: block; }
 .chart-tip {
   position: absolute;
+  white-space: pre;
   padding: 4px 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -724,3 +733,21 @@ h2[data-help] {
   font-family: ui-monospace, "SF Mono", Consolas, monospace;
   font-size: 0.85rem;
 }
+
+/* Power card: one row per motor */
+.motor-row + .motor-row { margin-top: 16px; }
+.motor-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.motor-swatch { width: 10px; height: 10px; border-radius: 3px; }
+.motor-name { font-weight: 600; font-size: 0.85rem; }
+
+.chart-legend { display: flex; gap: 14px; font-size: 0.75rem; color: var(--muted); }
+.chart-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.chart-legend i { width: 14px; height: 3px; border-radius: 2px; }
+.chart-tip-time { color: var(--muted); margin-bottom: 2px; }
+.chart-tip div:not(.chart-tip-time) { display: flex; align-items: center; gap: 6px; }
+.chart-tip i { width: 8px; height: 8px; border-radius: 2px; }

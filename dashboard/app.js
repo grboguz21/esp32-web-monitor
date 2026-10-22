@@ -76,10 +76,15 @@ let readableClosed = null;
 let device = null;      // { name, version }
 let info = null;        // chip info and reset reason, from INFO
 let health = null;      // latest HEALTH values
-let power = null;       // latest POWER averages: { voltage, currentMa, powerMw }
-let powerSensor = 'unknown';  // 'unknown' (no POWER yet), 'missing' or 'ok'
-let minVoltage = null;  // extremes since connecting or the last reset
-let maxCurrentMa = null;
+// Power data per motor (1 and 2), one INA219 each
+const MOTORS = [1, 2];
+const newMotorPower = () => ({
+  power: null,          // latest POWER averages: { voltage, currentMa, powerMw }
+  sensor: 'unknown',    // 'unknown' (no POWER yet), 'missing' or 'ok'
+  minVoltage: null,     // extremes since connecting or the last reset
+  maxCurrentMa: null,
+});
+const motorPower = { 1: newMotorPower(), 2: newMotorPower() };
 
 let demoTimer = null;   // fake POWER data for previewing the Power card without a sensor
 
@@ -88,12 +93,22 @@ const chartLabels = {
   axis: (s) => (s === 0 ? t('now') : t('axisAgo', { n: s })),
   ago: (s) => (s === 0 ? t('now') : t('secAgo', { n: s })),
 };
+const motorSeries = MOTORS.map((m) => ({
+  key: m,
+  label: () => t(`motor${m}`),
+  short: `M${m}`,
+  color: `--series-${m}`,
+}));
 const currentChart = new LiveChart(document.getElementById('currentChart'), {
+  series: motorSeries,
+  legend: document.getElementById('currentLegend'),
   format: (ma) => formatCurrent(ma),
   minSpan: 50,
   labels: chartLabels,
 });
 const voltageChart = new LiveChart(document.getElementById('voltageChart'), {
+  series: motorSeries,
+  legend: document.getElementById('voltageLegend'),
   format: (v) => `${v.toFixed(2)} V`,
   tickFormat: (v) => `${v.toFixed(1)} V`,
   minSpan: 0.5,
@@ -277,21 +292,27 @@ function handleLine(line) {
     return;
   }
 
-  if (type === 'POWER' && fields[0] === 'NA') {
-    powerSensor = 'missing';
-    power = null;
-    return;
-  }
-
-  if (type === 'POWER' && fields.length === 5) {
-    const [voltage, currentMa, powerMw, windowMinV, windowMaxMa] = fields.map(Number);
-    power = { voltage, currentMa, powerMw };
-    powerSensor = 'ok';
-    currentChart.push(currentMa);
-    voltageChart.push(voltage);
-    minVoltage = minVoltage === null ? windowMinV : Math.min(minVoltage, windowMinV);
-    maxCurrentMa = maxCurrentMa === null ? windowMaxMa : Math.max(maxCurrentMa, windowMaxMa);
-    return;
+  if (type === 'POWER' && fields[0] in motorPower) {
+    const motor = Number(fields[0]);
+    const m = motorPower[motor];
+    if (fields[1] === 'NA') {
+      if (m.sensor !== 'missing') {
+        currentChart.clear(motor);
+        voltageChart.clear(motor);
+      }
+      Object.assign(m, newMotorPower(), { sensor: 'missing' });
+      return;
+    }
+    if (fields.length === 6) {
+      const [voltage, currentMa, powerMw, windowMinV, windowMaxMa] = fields.slice(1).map(Number);
+      m.power = { voltage, currentMa, powerMw };
+      m.sensor = 'ok';
+      m.minVoltage = m.minVoltage === null ? windowMinV : Math.min(m.minVoltage, windowMinV);
+      m.maxCurrentMa = m.maxCurrentMa === null ? windowMaxMa : Math.max(m.maxCurrentMa, windowMaxMa);
+      currentChart.push(motor, currentMa);
+      voltageChart.push(motor, voltage);
+      return;
+    }
   }
 
   // Anything else (boot messages, debug prints) goes to the log as-is
@@ -416,43 +437,47 @@ function formatPower(mw) {
   return `${Math.round(mw)} mW`;
 }
 
-// The same Power card appears on the Dashboard and the Power tab
+// The same Power card appears on the Dashboard and the Power tab, one row per motor
 function renderPower(state) {
   const demo = demoTimer !== null;
   const live = state === 'online' || demo;
-  const sensor = demo ? 'demo' : state === 'online' ? powerSensor : 'unknown';
-  const badge = {
+  const badges = {
     ok: ['sensorOk', 'ok'],
     missing: ['sensorMissing', 'bad'],
     unknown: ['sensorWaiting', ''],
     demo: ['sensorDemo', 'demo'],
-  }[sensor];
-  const values = power
-    ? {
-        voltage: `${power.voltage.toFixed(2)} V`,
-        voltageSub: t('lowestV', { v: `${minVoltage.toFixed(2)} V` }),
-        current: formatCurrent(power.currentMa),
-        currentSub: t('peakI', { i: formatCurrent(maxCurrentMa) }),
-        power: formatPower(power.powerMw),
-      }
-    : { voltage: '—', voltageSub: '—', current: '—', currentSub: '—', power: '—' };
+  };
+  const anyData = MOTORS.some((m) => motorPower[m].power);
 
   for (const card of els.powerCards) {
-    const field = (name) => card.querySelector(`[data-pfield="${name}"]`);
-    card.dataset.sensor = sensor;
     card.toggleAttribute('data-stale', !live);
-    field('badge').textContent = t(badge[0]);
-    if (badge[1]) field('badge').dataset.level = badge[1];
-    else delete field('badge').dataset.level;
-    field('hint').hidden = sensor !== 'missing';
-    field('reset').disabled = !power;
-    field('demo').textContent = demo ? t('demoStop') : t('demoStart');
-    field('demo').disabled = !!port;
-    for (const [name, text] of Object.entries(values)) field(name).textContent = text;
-  }
+    const cardField = (name) => card.querySelector(`[data-pfield="${name}"]`);
+    cardField('reset').disabled = !anyData;
+    cardField('demo').textContent = demo ? t('demoStop') : t('demoStart');
+    cardField('demo').disabled = !!port;
 
-  currentChart.draw();
-  voltageChart.draw();
+    for (const row of card.querySelectorAll('[data-motor]')) {
+      const m = motorPower[row.dataset.motor];
+      const sensor = demo ? 'demo' : state === 'online' ? m.sensor : 'unknown';
+      const field = (name) => row.querySelector(`[data-pfield="${name}"]`);
+      const [badgeKey, level] = badges[sensor];
+      field('badge').textContent = t(badgeKey);
+      if (level) field('badge').dataset.level = level;
+      else delete field('badge').dataset.level;
+      field('hint').hidden = sensor !== 'missing';
+
+      const values = m.power
+        ? {
+            voltage: `${m.power.voltage.toFixed(2)} V`,
+            voltageSub: t('lowestV', { v: `${m.minVoltage.toFixed(2)} V` }),
+            current: formatCurrent(m.power.currentMa),
+            currentSub: t('peakI', { i: formatCurrent(m.maxCurrentMa) }),
+            power: formatPower(m.power.powerMw),
+          }
+        : { voltage: '—', voltageSub: '—', current: '—', currentSub: '—', power: '—' };
+      for (const [name, text] of Object.entries(values)) field(name).textContent = text;
+    }
+  }
 }
 
 function log(message) {
@@ -485,24 +510,38 @@ if (!('serial' in navigator)) {
 els.clearLogBtn.addEventListener('click', () => { els.log.textContent = ''; });
 // ---------- Demo data ----------
 
-// Fakes the firmware's POWER messages: ~300 mA idle, a load bump every ~15 s
-// and a short stall now and then, with the supply sagging as current rises
+// Fakes the firmware's POWER messages at the real 10 Hz rate. Each motor idles with a
+// slow ripple, gets a load bump now and then (motor 2 out of phase) and stalls briefly
+// once in a while; the shared supply sags with the total current.
 function startDemo() {
   resetPowerData();
   let tick = 0;
+  const noise = { 1: 0, 2: 0 };
+  const profiles = {
+    1: { idle: 290, period: 150, phase: 0, stallAt: 380 },
+    2: { idle: 250, period: 190, phase: 70, stallAt: 250 },
+  };
   demoTimer = setInterval(() => {
     tick++;
-    const phase = tick % 60;
-    const load = phase > 30 && phase < 50 ? 450 * Math.sin(((phase - 30) / 20) * Math.PI) : 0;
-    const stall = tick % 160 > 152 ? 750 : 0;
-    const currentMa = 290 + 20 * Math.sin(tick / 5) + 12 * Math.random() + load + stall;
-    const voltage = 12.02 - currentMa * 0.0006 + 0.01 * (Math.random() - 0.5);
-    const minV = voltage - 0.02 * Math.random();
-    const maxMa = currentMa + 15 * Math.random();
-    handleLine(`POWER,${voltage.toFixed(3)},${currentMa.toFixed(1)},${(voltage * currentMa).toFixed(1)},` +
-               `${minV.toFixed(3)},${maxMa.toFixed(1)}`);
+    const current = {};
+    for (const m of MOTORS) {
+      const p = profiles[m];
+      noise[m] = noise[m] * 0.85 + (Math.random() - 0.5) * 6;   // smoothed, not jumpy
+      const pos = (tick + p.phase) % p.period;
+      const load = pos > 60 && pos < 110 ? 420 * Math.sin(((pos - 60) / 50) * Math.PI) : 0;
+      const stallPos = tick % 400;
+      const stall = stallPos > p.stallAt && stallPos < p.stallAt + 20
+        ? 700 * Math.sin(((stallPos - p.stallAt) / 20) * Math.PI) : 0;
+      current[m] = p.idle + 18 * Math.sin(tick / 12 + m) + noise[m] + load + stall;
+    }
+    const supply = 12.02 - (current[1] + current[2]) * 0.0004;
+    for (const m of MOTORS) {
+      const voltage = supply - current[m] * 0.00015;
+      handleLine(`POWER,${m},${voltage.toFixed(3)},${current[m].toFixed(1)},` +
+                 `${(voltage * current[m]).toFixed(1)},${(voltage - 0.01).toFixed(3)},${(current[m] + 8).toFixed(1)}`);
+    }
     render();
-  }, 250);
+  }, 100);
   render();
 }
 
@@ -515,10 +554,7 @@ function stopDemo() {
 }
 
 function resetPowerData() {
-  power = null;
-  powerSensor = 'unknown';
-  minVoltage = null;
-  maxCurrentMa = null;
+  for (const m of MOTORS) Object.assign(motorPower[m], newMotorPower());
   currentChart.clear();
   voltageChart.clear();
 }
@@ -529,8 +565,11 @@ document.querySelectorAll('[data-pfield="demo"]').forEach((b) => b.addEventListe
 }));
 
 document.querySelectorAll('[data-pfield="reset"]').forEach((b) => b.addEventListener('click', () => {
-  minVoltage = power?.voltage ?? null;
-  maxCurrentMa = power?.currentMa ?? null;
+  for (const m of MOTORS) {
+    const mp = motorPower[m];
+    mp.minVoltage = mp.power?.voltage ?? null;
+    mp.maxCurrentMa = mp.power?.currentMa ?? null;
+  }
   render();
 }));
 
@@ -591,6 +630,8 @@ try {
 
 I18N.onChange(() => {
   renderThemeButton();
+  currentChart.renderLegend();
+  voltageChart.renderLegend();
   render();
   if ('serial' in navigator) refreshPorts();
 });

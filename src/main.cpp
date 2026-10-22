@@ -14,16 +14,19 @@ constexpr UBaseType_t TELEMETRY_PRIORITY = 1;
 constexpr uint32_t TELEMETRY_PERIOD_MS = 5;
 
 constexpr const char* DEVICE_NAME = "ESP32";
-// INA219 power sensor on the default I2C pins; optional, detected at runtime
+// One INA219 per motor on the default I2C pins; both optional, detected at runtime.
+// The motor 2 sensor has its A0 pads bridged, which moves it to address 0x41.
 constexpr int I2C_SDA_PIN = 21;
 constexpr int I2C_SCL_PIN = 22;
-constexpr uint8_t POWER_SENSOR_ADDRESS = 0x40;
-constexpr uint32_t POWER_SAMPLE_MS = 20;      // 50 Hz, averaged into each report
-constexpr uint32_t POWER_REPORT_MS = 250;
+constexpr uint32_t I2C_CLOCK_HZ = 400000;
+constexpr uint8_t POWER_SENSOR_ADDRESSES[] = {0x40, 0x41};
+constexpr size_t POWER_CHANNELS = sizeof(POWER_SENSOR_ADDRESSES);
+constexpr uint32_t POWER_SAMPLE_MS = 10;      // 100 Hz, averaged into each report
+constexpr uint32_t POWER_REPORT_MS = 100;
 constexpr uint32_t POWER_ABSENT_REPORT_MS = 1000;
 constexpr uint32_t SENSOR_PROBE_MS = 2000;
 
-constexpr const char* FIRMWARE_VERSION = "0.4.0";
+constexpr const char* FIRMWARE_VERSION = "0.5.0";
 
 // Protocol (one message per line):
 //   ESP32 -> PC : HB,<uptime_ms>               heartbeat
@@ -31,9 +34,9 @@ constexpr const char* FIRMWARE_VERSION = "0.4.0";
 //                 INFO,<chip>,<revision>,<cores>,<cpu_mhz>,<flash_bytes>,<heap_bytes>,<mac>,<reset_reason>
 //                 HEALTH,<free_heap>,<min_free_heap>,<max_alloc_heap>,<loop_avg_us>,<loop_max_us>,<loop_hz>,<stack_free_bytes>
 //                 (loop_* and stack_free_bytes describe the loop() task on core 1)
-//                 POWER,<voltage_V>,<current_mA>,<power_mW>,<min_voltage_V>,<max_current_mA>
-//                 (averages and extremes over the last report window)
-//                 POWER,NA                     no INA219 found
+//                 POWER,<motor>,<voltage_V>,<current_mA>,<power_mW>,<min_voltage_V>,<max_current_mA>
+//                 (motor is 1 or 2; averages and extremes over the last report window)
+//                 POWER,<motor>,NA             no INA219 found for that motor
 //   PC -> ESP32 : HELLO?                       request HELLO and INFO
 
 struct LoopStats {
@@ -58,10 +61,22 @@ struct PowerWindow {
   uint32_t count = 0;
 };
 
+struct PowerChannel {
+  uint8_t address;
+  Adafruit_INA219 sensor;
+  bool ready = false;
+  uint32_t lastProbe = 0;
+  uint32_t lastReport = 0;
+  PowerWindow window;
+
+  explicit PowerChannel(uint8_t addr) : address(addr), sensor(addr) {}
+};
+
 // Only touched by the telemetry task on core 0
-Adafruit_INA219 ina219(POWER_SENSOR_ADDRESS);
-bool powerSensorReady = false;
-PowerWindow powerWindow;
+PowerChannel powerChannels[POWER_CHANNELS] = {
+  PowerChannel(POWER_SENSOR_ADDRESSES[0]),
+  PowerChannel(POWER_SENSOR_ADDRESSES[1]),
+};
 
 const char* resetReasonName(esp_reset_reason_t reason) {
   switch (reason) {
@@ -174,70 +189,72 @@ bool i2cDevicePresent(uint8_t address) {
   return Wire.endTransmission() == 0;
 }
 
-// Looks for the sensor every SENSOR_PROBE_MS until found, then samples it
+// Looks for each sensor every SENSOR_PROBE_MS until found, then samples it
 void samplePower() {
-  static uint32_t lastProbe = 0;
   static uint32_t lastSample = 0;
   uint32_t now = millis();
+  bool sampleDue = now - lastSample >= POWER_SAMPLE_MS;
+  if (sampleDue) lastSample = now;
 
-  if (!powerSensorReady) {
-    if (lastProbe != 0 && now - lastProbe < SENSOR_PROBE_MS) return;
-    lastProbe = now;
-    // begin() also rewrites the calibration, which the chip loses when unplugged
-    if (i2cDevicePresent(POWER_SENSOR_ADDRESS) && ina219.begin()) {
-      powerSensorReady = true;
-      powerWindow = PowerWindow();
+  for (PowerChannel& ch : powerChannels) {
+    if (!ch.ready) {
+      if (ch.lastProbe != 0 && now - ch.lastProbe < SENSOR_PROBE_MS) continue;
+      ch.lastProbe = now;
+      // begin() also rewrites the calibration, which the chip loses when unplugged
+      if (i2cDevicePresent(ch.address) && ch.sensor.begin()) {
+        ch.ready = true;
+        ch.window = PowerWindow();
+      }
+      continue;
     }
-    return;
+    if (!sampleDue) continue;
+
+    float voltage = ch.sensor.getBusVoltage_V();   // measured at Vin-, i.e. what the motor sees
+    float currentMa = ch.sensor.getCurrent_mA();
+    PowerWindow& w = ch.window;
+    if (w.count == 0) {
+      w.minVoltage = voltage;
+      w.maxCurrentMa = currentMa;
+    }
+    w.sumVoltage += voltage;
+    w.sumCurrentMa += currentMa;
+    w.sumPowerMw += voltage * currentMa;
+    w.minVoltage = min(w.minVoltage, voltage);
+    w.maxCurrentMa = max(w.maxCurrentMa, currentMa);
+    w.count++;
   }
-
-  if (now - lastSample < POWER_SAMPLE_MS) return;
-  lastSample = now;
-
-  float voltage = ina219.getBusVoltage_V();   // measured at Vin-, i.e. what the load sees
-  float currentMa = ina219.getCurrent_mA();
-  float powerMw = voltage * currentMa;
-
-  if (powerWindow.count == 0) {
-    powerWindow.minVoltage = voltage;
-    powerWindow.maxCurrentMa = currentMa;
-  }
-  powerWindow.sumVoltage += voltage;
-  powerWindow.sumCurrentMa += currentMa;
-  powerWindow.sumPowerMw += powerMw;
-  powerWindow.minVoltage = min(powerWindow.minVoltage, voltage);
-  powerWindow.maxCurrentMa = max(powerWindow.maxCurrentMa, currentMa);
-  powerWindow.count++;
 }
 
 void sendPower() {
-  static uint32_t lastReport = 0;
   uint32_t now = millis();
+  for (size_t i = 0; i < POWER_CHANNELS; i++) {
+    PowerChannel& ch = powerChannels[i];
+    unsigned motor = i + 1;
 
-  if (powerSensorReady && now - lastReport >= POWER_REPORT_MS) {
-    lastReport = now;
-    if (!i2cDevicePresent(POWER_SENSOR_ADDRESS)) {   // unplugged since the last report
-      powerSensorReady = false;
-      return;
+    if (ch.ready && now - ch.lastReport >= POWER_REPORT_MS) {
+      ch.lastReport = now;
+      if (!i2cDevicePresent(ch.address)) {   // unplugged since the last report
+        ch.ready = false;
+        continue;
+      }
+      PowerWindow& w = ch.window;
+      if (w.count == 0) continue;
+      float n = w.count;
+      Serial.printf("POWER,%u,%.3f,%.1f,%.1f,%.3f,%.1f\n", motor,
+                    w.sumVoltage / n, w.sumCurrentMa / n, w.sumPowerMw / n,
+                    w.minVoltage, w.maxCurrentMa);
+      w = PowerWindow();
+    } else if (!ch.ready && now - ch.lastReport >= POWER_ABSENT_REPORT_MS) {
+      ch.lastReport = now;
+      Serial.printf("POWER,%u,NA\n", motor);
     }
-    if (powerWindow.count == 0) return;
-    float n = powerWindow.count;
-    Serial.printf("POWER,%.3f,%.1f,%.1f,%.3f,%.1f\n",
-                  powerWindow.sumVoltage / n,
-                  powerWindow.sumCurrentMa / n,
-                  powerWindow.sumPowerMw / n,
-                  powerWindow.minVoltage,
-                  powerWindow.maxCurrentMa);
-    powerWindow = PowerWindow();
-  } else if (!powerSensorReady && now - lastReport >= POWER_ABSENT_REPORT_MS) {
-    lastReport = now;
-    Serial.print("POWER,NA\n");
   }
 }
 
 // Runs on core 0 and owns the serial port and I2C bus, so this I/O never slows loop() down
 void telemetryTask(void*) {
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+  Wire.setClock(I2C_CLOCK_HZ);
   printHello();
   printInfo();
   for (;;) {

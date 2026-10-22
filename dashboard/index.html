@@ -119,31 +119,62 @@
           </div>
         </section>
 
-        <section class="card power" data-sensor="waiting">
+        <section class="card power">
           <div class="card-head">
             <h2 data-i18n="power">Power</h2>
             <div class="card-actions">
-              <span class="badge" data-pfield="badge"></span>
               <button class="btn btn-ghost" data-pfield="demo"></button>
               <button class="btn btn-ghost" data-pfield="reset" data-i18n="resetPeaks">Reset</button>
             </div>
           </div>
-          <p class="power-hint" data-pfield="hint" data-i18n="powerHint" hidden></p>
-          <div class="tiles">
-            <div class="tile">
-              <div class="tile-label" data-help="pVoltage"><span data-i18n="pVoltage">Supply voltage</span></div>
-              <div class="tile-value" data-pfield="voltage">—</div>
-              <div class="tile-sub" data-pfield="voltageSub">—</div>
+          <div class="motor-row" data-motor="1">
+            <div class="motor-head">
+              <i class="motor-swatch" style="background: var(--series-1)"></i>
+              <span class="motor-name" data-i18n="motor1">Motor 1</span>
+              <span class="badge" data-pfield="badge"></span>
             </div>
-            <div class="tile">
-              <div class="tile-label" data-help="pCurrent"><span data-i18n="pCurrent">Motor current</span></div>
-              <div class="tile-value" data-pfield="current">—</div>
-              <div class="tile-sub" data-pfield="currentSub">—</div>
+            <p class="power-hint" data-pfield="hint" data-i18n="powerHint" hidden></p>
+            <div class="tiles">
+              <div class="tile">
+                <div class="tile-label" data-help="pVoltage"><span data-i18n="pVoltage">Supply voltage</span></div>
+                <div class="tile-value" data-pfield="voltage">—</div>
+                <div class="tile-sub" data-pfield="voltageSub">—</div>
+              </div>
+              <div class="tile">
+                <div class="tile-label" data-help="pCurrent"><span data-i18n="pCurrent">Motor current</span></div>
+                <div class="tile-value" data-pfield="current">—</div>
+                <div class="tile-sub" data-pfield="currentSub">—</div>
+              </div>
+              <div class="tile">
+                <div class="tile-label" data-help="pPower"><span data-i18n="pPower">Power draw</span></div>
+                <div class="tile-value" data-pfield="power">—</div>
+                <div class="tile-sub" data-i18n="powerSub">voltage × current</div>
+              </div>
             </div>
-            <div class="tile">
-              <div class="tile-label" data-help="pPower"><span data-i18n="pPower">Power draw</span></div>
-              <div class="tile-value" data-pfield="power">—</div>
-              <div class="tile-sub" data-i18n="powerSub">voltage × current</div>
+          </div>
+          <div class="motor-row" data-motor="2">
+            <div class="motor-head">
+              <i class="motor-swatch" style="background: var(--series-2)"></i>
+              <span class="motor-name" data-i18n="motor2">Motor 2</span>
+              <span class="badge" data-pfield="badge"></span>
+            </div>
+            <p class="power-hint" data-pfield="hint" data-i18n="powerHint2" hidden></p>
+            <div class="tiles">
+              <div class="tile">
+                <div class="tile-label" data-help="pVoltage"><span data-i18n="pVoltage">Supply voltage</span></div>
+                <div class="tile-value" data-pfield="voltage">—</div>
+                <div class="tile-sub" data-pfield="voltageSub">—</div>
+              </div>
+              <div class="tile">
+                <div class="tile-label" data-help="pCurrent"><span data-i18n="pCurrent">Motor current</span></div>
+                <div class="tile-value" data-pfield="current">—</div>
+                <div class="tile-sub" data-pfield="currentSub">—</div>
+              </div>
+              <div class="tile">
+                <div class="tile-label" data-help="pPower"><span data-i18n="pPower">Power draw</span></div>
+                <div class="tile-value" data-pfield="power">—</div>
+                <div class="tile-sub" data-i18n="powerSub">voltage × current</div>
+              </div>
             </div>
           </div>
         </section>
@@ -158,42 +189,79 @@
       </div>
 
       <div class="tab-panel" data-panel="power" hidden>
-        <section class="card power" data-sensor="waiting">
+        <section class="card power">
           <div class="card-head">
             <h2 data-i18n="power">Power</h2>
             <div class="card-actions">
-              <span class="badge" data-pfield="badge"></span>
               <button class="btn btn-ghost" data-pfield="demo"></button>
               <button class="btn btn-ghost" data-pfield="reset" data-i18n="resetPeaks">Reset</button>
             </div>
           </div>
-          <p class="power-hint" data-pfield="hint" data-i18n="powerHint" hidden></p>
-          <div class="tiles">
-            <div class="tile">
-              <div class="tile-label" data-help="pVoltage"><span data-i18n="pVoltage">Supply voltage</span></div>
-              <div class="tile-value" data-pfield="voltage">—</div>
-              <div class="tile-sub" data-pfield="voltageSub">—</div>
+          <div class="motor-row" data-motor="1">
+            <div class="motor-head">
+              <i class="motor-swatch" style="background: var(--series-1)"></i>
+              <span class="motor-name" data-i18n="motor1">Motor 1</span>
+              <span class="badge" data-pfield="badge"></span>
             </div>
-            <div class="tile">
-              <div class="tile-label" data-help="pCurrent"><span data-i18n="pCurrent">Motor current</span></div>
-              <div class="tile-value" data-pfield="current">—</div>
-              <div class="tile-sub" data-pfield="currentSub">—</div>
+            <p class="power-hint" data-pfield="hint" data-i18n="powerHint" hidden></p>
+            <div class="tiles">
+              <div class="tile">
+                <div class="tile-label" data-help="pVoltage"><span data-i18n="pVoltage">Supply voltage</span></div>
+                <div class="tile-value" data-pfield="voltage">—</div>
+                <div class="tile-sub" data-pfield="voltageSub">—</div>
+              </div>
+              <div class="tile">
+                <div class="tile-label" data-help="pCurrent"><span data-i18n="pCurrent">Motor current</span></div>
+                <div class="tile-value" data-pfield="current">—</div>
+                <div class="tile-sub" data-pfield="currentSub">—</div>
+              </div>
+              <div class="tile">
+                <div class="tile-label" data-help="pPower"><span data-i18n="pPower">Power draw</span></div>
+                <div class="tile-value" data-pfield="power">—</div>
+                <div class="tile-sub" data-i18n="powerSub">voltage × current</div>
+              </div>
             </div>
-            <div class="tile">
-              <div class="tile-label" data-help="pPower"><span data-i18n="pPower">Power draw</span></div>
-              <div class="tile-value" data-pfield="power">—</div>
-              <div class="tile-sub" data-i18n="powerSub">voltage × current</div>
+          </div>
+          <div class="motor-row" data-motor="2">
+            <div class="motor-head">
+              <i class="motor-swatch" style="background: var(--series-2)"></i>
+              <span class="motor-name" data-i18n="motor2">Motor 2</span>
+              <span class="badge" data-pfield="badge"></span>
+            </div>
+            <p class="power-hint" data-pfield="hint" data-i18n="powerHint2" hidden></p>
+            <div class="tiles">
+              <div class="tile">
+                <div class="tile-label" data-help="pVoltage"><span data-i18n="pVoltage">Supply voltage</span></div>
+                <div class="tile-value" data-pfield="voltage">—</div>
+                <div class="tile-sub" data-pfield="voltageSub">—</div>
+              </div>
+              <div class="tile">
+                <div class="tile-label" data-help="pCurrent"><span data-i18n="pCurrent">Motor current</span></div>
+                <div class="tile-value" data-pfield="current">—</div>
+                <div class="tile-sub" data-pfield="currentSub">—</div>
+              </div>
+              <div class="tile">
+                <div class="tile-label" data-help="pPower"><span data-i18n="pPower">Power draw</span></div>
+                <div class="tile-value" data-pfield="power">—</div>
+                <div class="tile-sub" data-i18n="powerSub">voltage × current</div>
+              </div>
             </div>
           </div>
         </section>
 
         <div class="chart-grid">
           <section class="card">
-            <h2 data-i18n="chartCurrent">Motor current, last 60 s</h2>
+            <div class="card-head">
+              <h2 data-i18n="chartCurrent">Motor current, last 60 s</h2>
+              <div class="chart-legend" id="currentLegend"></div>
+            </div>
             <div class="chart" id="currentChart"></div>
           </section>
           <section class="card">
-            <h2 data-i18n="chartVoltage">Supply voltage, last 60 s</h2>
+            <div class="card-head">
+              <h2 data-i18n="chartVoltage">Supply voltage, last 60 s</h2>
+              <div class="chart-legend" id="voltageLegend"></div>
+            </div>
             <div class="chart" id="voltageChart"></div>
           </section>
         </div>
@@ -214,6 +282,7 @@
               <h3 data-i18n="wiringPower">Power path</h3>
               <p class="wiring-path">12 V (+) → Vin+ → Vin− → <span data-i18n="wiringLoad">motor (+)</span></p>
               <p class="placeholder" data-i18n="wiringNote">Connect the 12 V ground to an ESP32 GND pin. Never connect 12 V to an ESP32 pin.</p>
+              <p class="placeholder" data-i18n="wiringSecond">Motor 2: a second INA219 on the same four wires, with its A0 pads bridged (address 0x41).</p>
             </div>
           </div>
         </section>
