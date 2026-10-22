@@ -44,6 +44,7 @@
   /* Chart series (validated categorical pair: blue, orange) */
   --series-1: #2a78d6;
   --series-2: #eb6834;
+  --series-3: #1baf7a;
 
   color-scheme: light;
 }
@@ -77,6 +78,7 @@
     --c-led: #38bdf8;
     --series-1: #3987e5;
     --series-2: #d95926;
+    --series-3: #199e70;
     color-scheme: dark;
   }
 }
@@ -108,6 +110,7 @@
   --c-led: #38bdf8;
   --series-1: #3987e5;
   --series-2: #d95926;
+  --series-3: #199e70;
   color-scheme: dark;
 }
 
@@ -859,11 +862,11 @@ h2[data-help] {
 .enc-turns input { width: 56px; }
 
 /* Speed control */
-.spd-controls { grid-template-columns: minmax(0, 1.3fr) minmax(0, 1.2fr) repeat(3, minmax(0, 0.9fr)) minmax(0, 1.5fr); }
-.spd-controls .test-buttons { grid-column: auto; align-self: end; }
-@media (max-width: 1100px) {
-  .spd-controls { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .spd-controls .test-buttons { grid-column: span 3; }
+.spd-controls { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.spd-controls .test-buttons { grid-column: span 4; }
+@media (max-width: 900px) {
+  .spd-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .spd-controls .test-buttons { grid-column: span 2; }
 }
 .spd-tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 12px; }
 @media (max-width: 900px) { .spd-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

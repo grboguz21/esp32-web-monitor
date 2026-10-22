@@ -61,6 +61,11 @@ constexpr float DEFAULT_CPR = 186.2f;          // measured on motor 1 (counts pe
 constexpr size_t SPEED_TAPS = 4;               // controller speed: backward difference over 20 ms
 constexpr float DEFAULT_KP = 0.0089f;          // V per RPM (SIMC, tau_c = tau = 125 ms)
 constexpr float DEFAULT_KI = 0.071f;           // V per RPM*s
+// Reference model: the target is followed by a reference speed with this time constant;
+// feedforward drives the motor along the reference (with kA for the acceleration) and the
+// PI only corrects the gap between reference and measured speed
+constexpr float DEFAULT_TAU_REF_S = 0.100f;
+constexpr float DEFAULT_KA = 0.00125f;         // V per RPM/s (tau / K from the step test)
 
 struct FfPoint {
   float rpm;
@@ -78,7 +83,7 @@ constexpr FfPoint FF_MINUS[] = {
 
 enum class RunMode : uint8_t { OpenLoop = 0, Feedforward = 1, FeedforwardPi = 2 };
 
-constexpr const char* FIRMWARE_VERSION = "0.14.0";
+constexpr const char* FIRMWARE_VERSION = "0.15.0";
 
 // Protocol (one message per line):
 //   ESP32 -> PC : HB,<uptime_ms>               heartbeat
@@ -95,9 +100,9 @@ constexpr const char* FIRMWARE_VERSION = "0.14.0";
 //                 ENC,<count1>,<cps1>,<count2>,<cps2>
 //                 (encoder counts and counts per second; the sign follows the + direction
 //                  once ENCINV has been set to match)
-//                 SPD,<mode>,<target_rpm>,<speed_rpm>,<ff_duty>,<pi_duty>
+//                 SPD,<mode>,<target_rpm>,<ref_rpm>,<speed_rpm>,<ff_duty>,<pi_duty>
 //                 (speed control of the running motor; mode 0 open loop, 1 FF, 2 FF + PI)
-//                 L,<t_us>,<duty>,<count1>,<count2>,<target_rpm>,<speed_rpm>
+//                 L,<t_us>,<duty>,<count1>,<count2>,<target_rpm>,<ref_rpm>,<speed_rpm>
 //                 (one line per 200 Hz control tick while logging is on; t_us is micros()
 //                  at the tick, duty the one applied in that tick, speed the controller's)
 //   PC -> ESP32 : HELLO?                       request HELLO and INFO
@@ -113,6 +118,7 @@ constexpr const char* FIRMWARE_VERSION = "0.14.0";
 //                 SPEED,<motor>,<rpm>,<mode>   closed/open speed control: mode 1 FF, 2 FF + PI
 //                 GAIN,<kp>,<ki>               PI gains in V/RPM and V/(RPM*s)
 //                 CPR,<motor>,<counts>         counts per output revolution for RPM
+//                 REF,<tau_ms>,<ka>            reference time constant and kA (V per RPM/s)
 
 struct LoopStats {
   uint32_t lastStartUs = 0;
@@ -146,9 +152,12 @@ uint32_t lastPingMs = 0;
 float outputDuty = 0;   // duty currently driven, signed
 float gainKp = DEFAULT_KP;
 float gainKi = DEFAULT_KI;
+float refTauS = DEFAULT_TAU_REF_S;
+float gainKa = DEFAULT_KA;
 float motorCpr[MOTOR_COUNT] = {DEFAULT_CPR, DEFAULT_CPR};
 
 struct ControlStatus {
+  float refRpm = 0;
   float speedRpm = 0;   // controller's speed estimate
   float ffDuty = 0;
   float piDuty = 0;
@@ -172,6 +181,7 @@ struct LogEntry {
   float duty;
   int32_t count[MOTOR_COUNT];
   float targetRpm;
+  float refRpm;
   float speedRpm;
 };
 QueueHandle_t logQueue = nullptr;
@@ -287,6 +297,14 @@ void handleCommand(const String& cmd) {
       portENTER_CRITICAL(&runMux);
       gainKp = kp;
       gainKi = ki;
+      portEXIT_CRITICAL(&runMux);
+    }
+  } else if (cmd.startsWith("REF,")) {
+    float tauMs, ka;
+    if (sscanf(cmd.c_str(), "REF,%f,%f", &tauMs, &ka) == 2 && tauMs >= 5 && ka >= 0) {
+      portENTER_CRITICAL(&runMux);
+      refTauS = tauMs / 1000.0f;
+      gainKa = ka;
       portEXIT_CRITICAL(&runMux);
     }
   } else if (cmd.startsWith("CPR,")) {
@@ -479,15 +497,15 @@ void sendMotorRun() {
   portENTER_CRITICAL(&runMux);
   ControlStatus ctl = controlStatus;
   portEXIT_CRITICAL(&runMux);
-  Serial.printf("SPD,%u,%.1f,%.1f,%.1f,%.1f\n", (unsigned)run.mode, run.targetRpm, ctl.speedRpm,
-                ctl.ffDuty, ctl.piDuty);
+  Serial.printf("SPD,%u,%.1f,%.1f,%.1f,%.1f,%.1f\n", (unsigned)run.mode, run.targetRpm, ctl.refRpm,
+                ctl.speedRpm, ctl.ffDuty, ctl.piDuty);
 }
 
 void sendLog() {
   LogEntry e;
   while (xQueueReceive(logQueue, &e, 0) == pdTRUE) {
-    Serial.printf("L,%lu,%.1f,%ld,%ld,%.1f,%.1f\n", (unsigned long)e.tUs, e.duty,
-                  (long)e.count[0], (long)e.count[1], e.targetRpm, e.speedRpm);
+    Serial.printf("L,%lu,%.1f,%ld,%ld,%.1f,%.1f,%.1f\n", (unsigned long)e.tUs, e.duty,
+                  (long)e.count[0], (long)e.count[1], e.targetRpm, e.refRpm, e.speedRpm);
   }
 }
 
@@ -561,30 +579,53 @@ float feedforwardDuty(float rpm) {
 
 struct PiState {
   float integralV = 0;
+  float refRpm = 0;
   float lastTargetRpm = 0;
   RunMode lastMode = RunMode::OpenLoop;
   int lastMotor = -1;
 };
 
-// Speed modes: returns the duty (%) and fills the FF / PI split for reporting
-float speedControl(PiState& pi, const MotorRun& run, float speedRpm, float kp, float ki,
+struct Gains {
+  float kp;
+  float ki;
+  float ka;
+  float tauRefS;
+};
+
+// Speed modes: returns the duty (%) and fills the reference and FF / PI split for reporting
+float speedControl(PiState& pi, const MotorRun& run, float speedRpm, const Gains& g,
                    float& ffDuty, float& piDuty) {
-  bool fresh = run.motor != pi.lastMotor || run.mode != pi.lastMode ||
-               (run.targetRpm > 0) != (pi.lastTargetRpm > 0) || run.targetRpm == 0;
-  if (fresh) pi.integralV = 0;   // new motor, mode or direction: start the integral clean
+  constexpr float dt = CONTROL_PERIOD_US / 1e6f;
+  bool restart = run.motor != pi.lastMotor || run.mode != pi.lastMode || pi.lastTargetRpm == 0;
+  if (restart) {
+    pi.refRpm = speedRpm;   // follow on from where the motor is
+    pi.integralV = 0;
+  } else if ((run.targetRpm > 0) != (pi.lastTargetRpm > 0)) {
+    pi.integralV = 0;       // direction change: friction flips sign, start the integral clean
+  }
   pi.lastMotor = run.motor;
   pi.lastMode = run.mode;
   pi.lastTargetRpm = run.targetRpm;
 
-  ffDuty = feedforwardDuty(run.targetRpm);
+  ffDuty = 0;
   piDuty = 0;
-  if (run.targetRpm == 0) return 0;
-  float ffV = ffDuty / 100.0f * SUPPLY_V;
+  if (run.targetRpm == 0) {
+    pi.refRpm = 0;
+    return 0;
+  }
+
+  // Reference: first-order approach to the target
+  float refRate = (run.targetRpm - pi.refRpm) / g.tauRefS;   // RPM/s
+  pi.refRpm += refRate * dt;
+
+  float ffV = feedforwardDuty(pi.refRpm) / 100.0f * SUPPLY_V + g.ka * refRate;
+  ffV = constrain(ffV, -SUPPLY_V, SUPPLY_V);
+  ffDuty = ffV / SUPPLY_V * 100.0f;
   if (run.mode != RunMode::FeedforwardPi) return ffDuty;
 
-  float error = run.targetRpm - speedRpm;
-  float pV = kp * error;
-  float candidate = pi.integralV + ki * error * (CONTROL_PERIOD_US / 1e6f);
+  float error = pi.refRpm - speedRpm;
+  float pV = g.kp * error;
+  float candidate = pi.integralV + g.ki * error * dt;
   float uCandidate = ffV + pV + candidate;
   // Clamping: integrate unless the output is saturated and the error pushes it further
   bool saturated = fabsf(uCandidate) > SUPPLY_V;
@@ -619,8 +660,7 @@ void runMotors() {
   }
   MotorRun run = motorRun;
   bool running = runState == RunState::Running;
-  float kp = gainKp;
-  float ki = gainKi;
+  Gains gains = {gainKp, gainKi, gainKa, refTauS};
   portEXIT_CRITICAL(&runMux);
 
   // Measure first, then decide this tick's duty
@@ -632,7 +672,7 @@ void runMotors() {
   if (motorActive) {
     duty = run.mode == RunMode::OpenLoop
         ? run.duty
-        : speedControl(pi, run, speedRpm[run.motor], kp, ki, ffDuty, piDuty);
+        : speedControl(pi, run, speedRpm[run.motor], gains, ffDuty, piDuty);
   } else {
     pi = PiState();
   }
@@ -647,7 +687,7 @@ void runMotors() {
   float shownSpeed = run.motor < (int)MOTOR_COUNT ? speedRpm[run.motor] : 0;
   portENTER_CRITICAL(&runMux);
   outputDuty = !running ? 0 : ledActive ? ledDuty : duty;
-  controlStatus = {shownSpeed, ffDuty, piDuty};
+  controlStatus = {run.mode == RunMode::OpenLoop ? 0 : pi.refRpm, shownSpeed, ffDuty, piDuty};
   portEXIT_CRITICAL(&runMux);
 
   if (logEnabled) {
@@ -658,6 +698,7 @@ void runMotors() {
     for (size_t i = 0; i < MOTOR_COUNT; i++) e.count[i] = (int32_t)encoderStatus[i].count;
     portEXIT_CRITICAL(&runMux);
     e.targetRpm = run.mode == RunMode::OpenLoop ? 0 : run.targetRpm;
+    e.refRpm = run.mode == RunMode::OpenLoop ? 0 : pi.refRpm;
     e.speedRpm = shownSpeed;
     xQueueSend(logQueue, &e, 0);   // never block the control loop; drop if the queue is full
   }

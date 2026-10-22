@@ -112,7 +112,10 @@ class LiveChart {
 
     // Left margin fits the widest tick label
     const labelWidth = Math.max(0, ...ticks.map((tk) => ctx.measureText(tk.label).width));
-    const pad = { left: Math.max(48, Math.ceil(labelWidth) + 14), right: 34, top: 10, bottom: 24 };
+    const endLabelWidth = this.series.length > 1
+      ? Math.max(...this.series.map((s) => ctx.measureText(typeof s.short === 'function' ? s.short() : s.short).width))
+      : 0;
+    const pad = { left: Math.max(48, Math.ceil(labelWidth) + 14), right: Math.max(34, Math.ceil(endLabelWidth) + 16), top: 10, bottom: 24 };
     const pw = w - pad.left - pad.right;
     const ph = h - pad.top - pad.bottom;
     const now = performance.now();
@@ -205,7 +208,10 @@ class LiveChart {
       ctx.fillStyle = token('--text');
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      for (const e of ends) ctx.fillText(e.s.short, Math.min(e.x, pad.left + pw) + 8, e.y);
+      for (const e of ends) {
+        const label = typeof e.s.short === 'function' ? e.s.short() : e.s.short;
+        ctx.fillText(label, Math.min(e.x, pad.left + pw) + 8, e.y);
+      }
     }
 
     if (!hovering) {

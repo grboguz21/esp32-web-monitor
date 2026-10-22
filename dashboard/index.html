@@ -328,6 +328,12 @@
             <label class="field"><span>Ki (V/(RPM·s))</span>
               <input id="spdKi" type="number" min="0" step="0.01" value="0.071">
             </label>
+            <label class="field"><span>τref (ms)</span>
+              <input id="spdTauRef" type="number" min="5" step="10" value="100">
+            </label>
+            <label class="field"><span>kA (V/(RPM/s))</span>
+              <input id="spdKa" type="number" min="0" step="0.0001" value="0.00125">
+            </label>
             <div class="test-buttons">
               <button id="spdStartBtn" class="btn" data-i18n="testStart">Start</button>
               <button id="spdStopBtn" class="btn btn-danger" data-i18n="testStop">Stop</button>
@@ -341,7 +347,7 @@
             <div class="tile"><div class="tile-label" data-i18n="spdDutyNow">Duty (FF + PI)</div><div class="tile-value" id="spdDutyNow">—</div><div class="tile-sub" id="spdDutySplit">—</div></div>
           </div>
           <div class="card-head">
-            <h3 class="chart-title" data-i18n="spdChart">Speed: target and measured (RPM)</h3>
+            <h3 class="chart-title" data-i18n="spdChart">Speed: target, reference and measured (RPM)</h3>
             <div class="chart-legend" id="spdLegend"></div>
           </div>
           <div class="chart" id="spdChart"></div>

@@ -57,6 +57,8 @@ const els = {
   spdTarget: document.getElementById('spdTarget'),
   spdKp: document.getElementById('spdKp'),
   spdKi: document.getElementById('spdKi'),
+  spdTauRef: document.getElementById('spdTauRef'),
+  spdKa: document.getElementById('spdKa'),
   spdStartBtn: document.getElementById('spdStartBtn'),
   spdStopBtn: document.getElementById('spdStopBtn'),
   spdTargetNow: document.getElementById('spdTargetNow'),
@@ -199,11 +201,12 @@ const encDirCheck = { 1: null, 2: null };   // null unknown, true matches +, fal
 let encSim = null;   // demo: { timer, count: {1,2}, speed: {1,2} }
 
 // Speed control: the firmware's SPD report for the running motor
-let spd = null;   // { mode, target, speed, ff, pi }
+let spd = null;   // { mode, target, ref, speed, ff, pi }
 const spdChart = new LiveChart(document.getElementById('spdChart'), {
   series: [
-    { key: 'speed', label: () => t('spdSpeedNow'), short: '', color: '--series-1' },
-    { key: 'target', label: () => t('spdTargetNow'), short: '', color: '--series-2' },
+    { key: 'speed', label: () => t('spdSpeedNow'), short: () => t('spdSpeedNow'), color: '--series-1' },
+    { key: 'ref', label: () => t('spdRefNow'), short: () => t('spdRefNow'), color: '--series-3' },
+    { key: 'target', label: () => t('spdTargetNow'), short: () => t('spdTargetNow'), color: '--series-2' },
   ],
   legend: document.getElementById('spdLegend'),
   format: (v) => `${Math.round(v)} RPM`,
@@ -477,11 +480,13 @@ function handleLine(line) {
     }
   }
 
-  if (type === 'SPD' && fields.length === 5) {
-    const [mode, target, speed, ff, pi] = fields.map(Number);
-    spd = { mode, target, speed, ff, pi };
+  if (type === 'SPD' && fields.length === 6) {
+    const [mode, target, ref, speed, ff, pi] = fields.map(Number);
+    spd = { mode, target, ref, speed, ff, pi };
+    const active = testState === 1 && mode > 0;
     spdChart.push('speed', speed);
-    spdChart.push('target', testState === 1 && mode > 0 ? target : 0);
+    spdChart.push('ref', active ? ref : 0);
+    spdChart.push('target', active ? target : 0);
     return;
   }
 
@@ -890,7 +895,12 @@ function sendEncoderSettings() {
 function sendGains() {
   const kp = Math.max(0, Number(els.spdKp.value) || 0);
   const ki = Math.max(0, Number(els.spdKi.value) || 0);
-  if (port) send(`GAIN,${kp},${ki}`);
+  const tauRef = Math.max(5, Number(els.spdTauRef.value) || 100);
+  const ka = Math.max(0, Number(els.spdKa.value) || 0);
+  if (port) {
+    send(`GAIN,${kp},${ki}`);
+    send(`REF,${tauRef},${ka}`);
+  }
 }
 
 function startSpeed() {
@@ -918,7 +928,7 @@ els.spdStopBtn.addEventListener('click', stopTest);
 for (const el of [els.spdTarget, els.spdMode]) {
   el.addEventListener('change', () => { if (spdRunning()) startSpeed(); });
 }
-for (const el of [els.spdKp, els.spdKi]) el.addEventListener('change', sendGains);
+for (const el of [els.spdKp, els.spdKi, els.spdTauRef, els.spdKa]) el.addEventListener('change', sendGains);
 renderSpdMotors();
 
 function zeroEncoder(m) {
