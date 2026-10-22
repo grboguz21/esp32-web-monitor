@@ -779,6 +779,6 @@ h2[data-help] {
 .test-buttons .btn { flex: 1; }
 .btn-danger { background: var(--avoid); color: #fff; }
 .test-warning { margin: 0 0 14px; font-size: 0.75rem; color: var(--muted); }
-.test-charts { margin-top: 16px; }
-.test-charts h3 { margin: 0; font-size: 0.85rem; }
+.chart-title { margin: 0; font-size: 0.85rem; }
+.chart-now { font-size: 0.85rem; font-weight: 700; font-variant-numeric: tabular-nums; }
 .badge[data-level="run"] { background: color-mix(in srgb, var(--online) 18%, transparent); color: var(--online); }

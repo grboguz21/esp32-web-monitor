@@ -179,97 +179,6 @@
           </div>
         </section>
 
-        <section class="card motor-test" id="testCard">
-          <div class="card-head">
-            <h2 data-i18n="testTitle">Motor test: square wave</h2>
-            <span class="badge" id="testBadge"></span>
-          </div>
-          <div class="test-controls">
-            <label class="field"><span data-i18n="testMotor">Motor</span>
-              <select id="testMask">
-                <option value="1" data-i18n="motor1">Motor 1</option>
-                <option value="2" data-i18n="motor2">Motor 2</option>
-                <option value="3" data-i18n="bothMotors">Both</option>
-              </select>
-            </label>
-            <label class="field"><span data-i18n="testHigh">High duty (%)</span>
-              <input id="testHigh" type="number" min="-100" max="100" step="5" value="60">
-            </label>
-            <label class="field"><span data-i18n="testLow">Low duty (%)</span>
-              <input id="testLow" type="number" min="-100" max="100" step="5" value="0">
-            </label>
-            <label class="field"><span data-i18n="testPeriod">Period (ms)</span>
-              <input id="testPeriod" type="number" min="200" step="100" value="2000">
-            </label>
-            <label class="field"><span data-i18n="testCpr">Counts per rev</span>
-              <input id="testCpr" type="number" min="0" step="1" value="0">
-            </label>
-            <div class="test-buttons">
-              <button id="testStartBtn" class="btn" data-i18n="testStart">Start</button>
-              <button id="testStopBtn" class="btn btn-danger" data-i18n="testStop">Stop</button>
-            </div>
-          </div>
-          <p class="test-warning" data-i18n="testWarning">The motors will spin. Keep hands and cables clear.</p>
-            <div class="motor-row" data-tmotor="1">
-              <div class="motor-head">
-                <i class="motor-swatch" style="background: var(--series-1)"></i>
-                <span class="motor-name" data-i18n="motor1">Motor 1</span>
-              </div>
-              <div class="tiles">
-                <div class="tile">
-                  <div class="tile-label" data-help="tDuty"><span data-i18n="tDuty">PWM duty</span></div>
-                  <div class="tile-value" data-tfield="duty">—</div>
-                </div>
-                <div class="tile">
-                  <div class="tile-label" data-help="tSpeed"><span data-i18n="tSpeed">Speed</span></div>
-                  <div class="tile-value" data-tfield="speed">—</div>
-                </div>
-                <div class="tile">
-                  <div class="tile-label" data-help="tCount"><span data-i18n="tCount">Encoder count</span></div>
-                  <div class="tile-value" data-tfield="count">—</div>
-                  <div class="tile-sub" data-tfield="revs">—</div>
-                </div>
-              </div>
-            </div>
-            <div class="motor-row" data-tmotor="2">
-              <div class="motor-head">
-                <i class="motor-swatch" style="background: var(--series-2)"></i>
-                <span class="motor-name" data-i18n="motor2">Motor 2</span>
-              </div>
-              <div class="tiles">
-                <div class="tile">
-                  <div class="tile-label" data-help="tDuty"><span data-i18n="tDuty">PWM duty</span></div>
-                  <div class="tile-value" data-tfield="duty">—</div>
-                </div>
-                <div class="tile">
-                  <div class="tile-label" data-help="tSpeed"><span data-i18n="tSpeed">Speed</span></div>
-                  <div class="tile-value" data-tfield="speed">—</div>
-                </div>
-                <div class="tile">
-                  <div class="tile-label" data-help="tCount"><span data-i18n="tCount">Encoder count</span></div>
-                  <div class="tile-value" data-tfield="count">—</div>
-                  <div class="tile-sub" data-tfield="revs">—</div>
-                </div>
-              </div>
-            </div>
-          <div class="chart-grid test-charts">
-            <div>
-              <div class="card-head">
-                <h3 data-i18n="chartDuty">PWM duty</h3>
-                <div class="chart-legend" id="dutyLegend"></div>
-              </div>
-              <div class="chart" id="dutyChart"></div>
-            </div>
-            <div>
-              <div class="card-head">
-                <h3 data-i18n="chartSpeed">Encoder speed</h3>
-                <div class="chart-legend" id="speedLegend"></div>
-              </div>
-              <div class="chart" id="speedChart"></div>
-            </div>
-          </div>
-        </section>
-
         <section class="card log-card">
           <div class="card-head">
             <h2 data-help="log"><span data-i18n="serialOutput">Serial output</span></h2>
@@ -357,6 +266,36 @@
           </section>
         </div>
 
+        <section class="card motor-test" id="testCard">
+          <div class="card-head">
+            <h2 data-i18n="testTitle">PWM test: square wave</h2>
+            <span class="badge" id="testBadge"></span>
+          </div>
+          <div class="test-controls">
+            <label class="field"><span data-i18n="testPin">Pin</span>
+              <select id="testPin"></select>
+            </label>
+            <label class="field"><span data-i18n="testHigh">High duty (%)</span>
+              <input id="testHigh" type="number" min="0" max="100" step="5" value="60">
+            </label>
+            <label class="field"><span data-i18n="testLow">Low duty (%)</span>
+              <input id="testLow" type="number" min="0" max="100" step="5" value="0">
+            </label>
+            <label class="field"><span data-i18n="testPeriod">Period (ms)</span>
+              <input id="testPeriod" type="number" min="200" step="100" value="2000">
+            </label>
+            <div class="test-buttons">
+              <button id="testStartBtn" class="btn" data-i18n="testStart">Start</button>
+              <button id="testStopBtn" class="btn btn-danger" data-i18n="testStop">Stop</button>
+            </div>
+          </div>
+          <p class="test-warning" data-i18n="testWarning">If the pin drives a motor input, the motor will spin.</p>
+          <div class="card-head">
+            <h3 class="chart-title" id="pwmChartTitle"></h3>
+            <span class="chart-now" id="testDutyNow"></span>
+          </div>
+          <div class="chart" id="pwmChart"></div>
+        </section>
       </div>
 
       <div class="tab-panel" data-panel="board" hidden>

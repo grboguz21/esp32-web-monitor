@@ -1,7 +1,6 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_INA219.h>
-#include <ESP32Encoder.h>
 #include <esp_system.h>
 
 constexpr uint32_t SERIAL_BAUD = 115200;
@@ -34,23 +33,24 @@ struct MotorPins {
   int ena;
   int in1;
   int in2;
-  int encA;
-  int encB;
 };
 constexpr MotorPins MOTOR_PINS[] = {
-  {25, 26, 27, 34, 35},   // motor 1 (GPIO34/35 have no internal pull-ups)
-  {18, 19, 23, 16, 17},   // motor 2
+  {25, 26, 27},   // motor 1
+  {18, 19, 23},   // motor 2
 };
 constexpr size_t MOTOR_COUNT = sizeof(MOTOR_PINS) / sizeof(MOTOR_PINS[0]);
+
+// PWM test: a square wave of duty on any of these output-safe pins
+// (not UART0, not the I2C bus, not input-only or flash pins)
+constexpr int PWM_TEST_PINS[] = {2, 4, 5, 12, 13, 14, 15, 16, 17, 18, 19, 23, 25, 26, 27, 32, 33};
 constexpr uint32_t PWM_FREQ_HZ = 5000;
 constexpr uint8_t PWM_BITS = 10;
 constexpr uint32_t PWM_MAX = (1 << PWM_BITS) - 1;
-constexpr uint32_t MOTOR_UPDATE_MS = 5;
-constexpr uint32_t SPEED_WINDOW_MS = 50;
-constexpr uint32_t MOTOR_WATCHDOG_MS = 1000;  // stop if the dashboard goes quiet this long
-constexpr uint32_t MOTOR_REPORT_MS = 40;      // 25 Hz
+constexpr uint32_t PWM_UPDATE_MS = 5;
+constexpr uint32_t PWM_WATCHDOG_MS = 1000;   // stop if the dashboard goes quiet this long
+constexpr uint32_t PWM_REPORT_MS = 40;       // 25 Hz
 
-constexpr const char* FIRMWARE_VERSION = "0.6.0";
+constexpr const char* FIRMWARE_VERSION = "0.7.0";
 
 // Protocol (one message per line):
 //   ESP32 -> PC : HB,<uptime_ms>               heartbeat
@@ -61,15 +61,13 @@ constexpr const char* FIRMWARE_VERSION = "0.6.0";
 //                 POWER,<motor>,<voltage_V>,<current_mA>,<power_mW>,<min_voltage_V>,<max_current_mA>
 //                 (motor is 1 or 2; averages and extremes over the last report window)
 //                 POWER,<motor>,NA             no INA219 found for that motor
-//                 MOTORS,<state>,<duty1>,<count1>,<cps1>,<duty2>,<count2>,<cps2>
-//                 (state 0 idle, 1 running, 2 stopped by the watchdog; duty in %,
-//                  count is encoder counts since the test started, cps = counts/s)
+//                 PWMOUT,<state>,<pin>,<duty>
+//                 (state 0 idle, 1 running, 2 stopped by the watchdog; duty in % on that pin)
 //   PC -> ESP32 : HELLO?                       request HELLO and INFO
-//                 PING                         dashboard is alive (keeps motors allowed)
-//                 SQW,<mask>,<high>,<low>,<period_ms>
-//                                              square wave test: mask 1 = motor 1, 2 = motor 2,
-//                                              3 = both; duty in % (-100..100, sign = direction)
-//                 STOP                         stop all motors
+//                 PING                         dashboard is alive (keeps the PWM test allowed)
+//                 PWM,<pin>,<high>,<low>,<period_ms>
+//                                              square wave of duty (0..100 %) on a GPIO
+//                 STOP                         stop the PWM test
 
 struct LoopStats {
   uint32_t lastStartUs = 0;
@@ -86,29 +84,20 @@ TaskHandle_t mainLoopTask = nullptr;
 
 enum class TestState : uint8_t { Idle = 0, Running = 1, Watchdog = 2 };
 
-struct SquareWave {
-  uint8_t mask = 0;
+struct PwmTest {
+  int pin = -1;
   float dutyHigh = 0;
   float dutyLow = 0;
   uint32_t periodMs = 2000;
   uint32_t startMs = 0;
 };
 
-struct MotorStatus {
-  float duty = 0;
-  int64_t count = 0;
-  float countsPerSec = 0;
-};
-
-// Shared between the telemetry task (core 0: commands, reports) and loop() (core 1: motors)
-portMUX_TYPE motorMux = portMUX_INITIALIZER_UNLOCKED;
-SquareWave squareWave;
+// Shared between the telemetry task (core 0: commands, reports) and loop() (core 1: output)
+portMUX_TYPE testMux = portMUX_INITIALIZER_UNLOCKED;
+PwmTest pwmTest;
 TestState testState = TestState::Idle;
-bool restartTest = false;        // set by SQW, consumed by loop() to zero the encoders
 uint32_t lastPingMs = 0;
-MotorStatus motorStatus[MOTOR_COUNT];
-
-ESP32Encoder encoders[MOTOR_COUNT];
+float outputDuty = 0;   // duty currently on the test pin
 
 struct PowerWindow {
   float sumVoltage = 0;
@@ -135,6 +124,11 @@ PowerChannel powerChannels[POWER_CHANNELS] = {
   PowerChannel(POWER_SENSOR_ADDRESSES[0]),
   PowerChannel(POWER_SENSOR_ADDRESSES[1]),
 };
+
+bool isPwmTestPin(int pin) {
+  for (int p : PWM_TEST_PINS) if (p == pin) return true;
+  return false;
+}
 
 const char* resetReasonName(esp_reset_reason_t reason) {
   switch (reason) {
@@ -175,29 +169,28 @@ void handleCommand(const String& cmd) {
     printHello();
     printInfo();
   } else if (cmd == "PING") {
-    portENTER_CRITICAL(&motorMux);
+    portENTER_CRITICAL(&testMux);
     lastPingMs = millis();
-    portEXIT_CRITICAL(&motorMux);
+    portEXIT_CRITICAL(&testMux);
   } else if (cmd == "STOP") {
-    portENTER_CRITICAL(&motorMux);
+    portENTER_CRITICAL(&testMux);
     testState = TestState::Idle;
-    portEXIT_CRITICAL(&motorMux);
-  } else if (cmd.startsWith("SQW,")) {
-    unsigned mask;
+    portEXIT_CRITICAL(&testMux);
+  } else if (cmd.startsWith("PWM,")) {
+    int pin;
     float high, low;
     unsigned long period;
-    if (sscanf(cmd.c_str(), "SQW,%u,%f,%f,%lu", &mask, &high, &low, &period) == 4 &&
-        mask >= 1 && mask <= 3 && period >= 100) {
-      portENTER_CRITICAL(&motorMux);
-      squareWave.mask = mask;
-      squareWave.dutyHigh = constrain(high, -100.0f, 100.0f);
-      squareWave.dutyLow = constrain(low, -100.0f, 100.0f);
-      squareWave.periodMs = period;
-      squareWave.startMs = millis();
+    if (sscanf(cmd.c_str(), "PWM,%d,%f,%f,%lu", &pin, &high, &low, &period) == 4 &&
+        isPwmTestPin(pin) && period >= 100) {
+      portENTER_CRITICAL(&testMux);
+      pwmTest.pin = pin;
+      pwmTest.dutyHigh = constrain(high, 0.0f, 100.0f);
+      pwmTest.dutyLow = constrain(low, 0.0f, 100.0f);
+      pwmTest.periodMs = period;
+      pwmTest.startMs = millis();
       lastPingMs = millis();
       testState = TestState::Running;
-      restartTest = true;
-      portEXIT_CRITICAL(&motorMux);
+      portEXIT_CRITICAL(&testMux);
     }
   }
 }
@@ -334,21 +327,19 @@ void sendPower() {
   }
 }
 
-void sendMotors() {
+void sendPwmTest() {
   static uint32_t lastReport = 0;
   uint32_t now = millis();
-  if (now - lastReport < MOTOR_REPORT_MS) return;
+  if (now - lastReport < PWM_REPORT_MS) return;
   lastReport = now;
 
-  portENTER_CRITICAL(&motorMux);
+  portENTER_CRITICAL(&testMux);
   TestState state = testState;
-  MotorStatus m[MOTOR_COUNT];
-  for (size_t i = 0; i < MOTOR_COUNT; i++) m[i] = motorStatus[i];
-  portEXIT_CRITICAL(&motorMux);
+  int pin = pwmTest.pin;
+  float duty = outputDuty;
+  portEXIT_CRITICAL(&testMux);
 
-  Serial.printf("MOTORS,%u,%.1f,%lld,%.0f,%.1f,%lld,%.0f\n", (unsigned)state,
-                m[0].duty, m[0].count, m[0].countsPerSec,
-                m[1].duty, m[1].count, m[1].countsPerSec);
+  Serial.printf("PWMOUT,%u,%d,%.1f\n", (unsigned)state, pin, duty);
 }
 
 // Runs on core 0 and owns the serial port and I2C bus, so this I/O never slows loop() down
@@ -363,96 +354,83 @@ void telemetryTask(void*) {
     sendHealth();
     samplePower();
     sendPower();
-    sendMotors();
+    sendPwmTest();
     vTaskDelay(pdMS_TO_TICKS(TELEMETRY_PERIOD_MS));
   }
 }
 
-// ---------- Motors (core 1) ----------
+// ---------- PWM test output (core 1) ----------
 
-void setupMotors() {
-  ESP32Encoder::useInternalWeakPullResistors = puType::up;   // ignored on GPIO34/35
-  for (size_t i = 0; i < MOTOR_COUNT; i++) {
-    const MotorPins& p = MOTOR_PINS[i];
+void setupMotorPins() {
+  for (const MotorPins& p : MOTOR_PINS) {
     pinMode(p.ena, OUTPUT);
-    digitalWrite(p.ena, LOW);   // coast until a test starts
-    ledcAttach(p.in1, PWM_FREQ_HZ, PWM_BITS);
-    ledcAttach(p.in2, PWM_FREQ_HZ, PWM_BITS);
-    ledcWrite(p.in1, 0);
-    ledcWrite(p.in2, 0);
-    encoders[i].attachFullQuad(p.encA, p.encB);
-    encoders[i].setFilter(250);   // ignore glitches shorter than ~3 us
-    encoders[i].clearCount();
+    digitalWrite(p.ena, LOW);   // coast
+    pinMode(p.in1, OUTPUT);
+    digitalWrite(p.in1, LOW);
+    pinMode(p.in2, OUTPUT);
+    digitalWrite(p.in2, LOW);
   }
 }
 
-// duty in % (-100..100); the sign picks the direction
-void applyDuty(size_t motor, float duty, bool enabled) {
-  const MotorPins& p = MOTOR_PINS[motor];
-  uint32_t pwm = (uint32_t)(fabsf(duty) / 100.0f * PWM_MAX + 0.5f);
-  ledcWrite(p.in1, duty > 0 ? pwm : 0);
-  ledcWrite(p.in2, duty < 0 ? pwm : 0);
-  digitalWrite(p.ena, enabled ? HIGH : LOW);
+// The motor whose IN1/IN2 is this pin, or -1
+int motorForPin(int pin) {
+  for (size_t i = 0; i < MOTOR_COUNT; i++) {
+    if (MOTOR_PINS[i].in1 == pin || MOTOR_PINS[i].in2 == pin) return i;
+  }
+  return -1;
 }
 
-void runMotors() {
+void releasePin(int pin) {
+  if (pin < 0) return;
+  ledcDetach(pin);
+  pinMode(pin, OUTPUT);
+  digitalWrite(pin, LOW);
+  int motor = motorForPin(pin);
+  if (motor >= 0) digitalWrite(MOTOR_PINS[motor].ena, LOW);
+}
+
+void runPwmTest() {
   static uint32_t lastUpdate = 0;
-  static uint32_t lastSpeedMs = 0;
-  static int64_t lastCount[MOTOR_COUNT] = {};
-  static float countsPerSec[MOTOR_COUNT] = {};
+  static int activePin = -1;   // pin currently attached to the PWM peripheral
   uint32_t now = millis();
-  if (now - lastUpdate < MOTOR_UPDATE_MS) return;
+  if (now - lastUpdate < PWM_UPDATE_MS) return;
   lastUpdate = now;
 
-  portENTER_CRITICAL(&motorMux);
-  if (testState == TestState::Running && now - lastPingMs > MOTOR_WATCHDOG_MS) {
+  portENTER_CRITICAL(&testMux);
+  if (testState == TestState::Running && now - lastPingMs > PWM_WATCHDOG_MS) {
     testState = TestState::Watchdog;
   }
-  SquareWave sq = squareWave;
+  PwmTest test = pwmTest;
   bool running = testState == TestState::Running;
-  bool restart = restartTest;
-  restartTest = false;
-  portEXIT_CRITICAL(&motorMux);
+  portEXIT_CRITICAL(&testMux);
 
-  if (restart) {
-    for (size_t i = 0; i < MOTOR_COUNT; i++) {
-      encoders[i].clearCount();
-      lastCount[i] = 0;
-      countsPerSec[i] = 0;
+  int wantPin = running ? test.pin : -1;
+  if (wantPin != activePin) {
+    releasePin(activePin);
+    activePin = -1;
+    if (wantPin >= 0 && ledcAttach(wantPin, PWM_FREQ_HZ, PWM_BITS)) {
+      activePin = wantPin;
+      // Driving a motor input: let that L298N channel conduct
+      int motor = motorForPin(wantPin);
+      if (motor >= 0) digitalWrite(MOTOR_PINS[motor].ena, HIGH);
     }
-    lastSpeedMs = now;
   }
 
-  bool speedDue = now - lastSpeedMs >= SPEED_WINDOW_MS;
-  float dt = (now - lastSpeedMs) / 1000.0f;
-  if (speedDue) lastSpeedMs = now;
-
-  MotorStatus status[MOTOR_COUNT];
-  for (size_t i = 0; i < MOTOR_COUNT; i++) {
-    float duty = 0;
-    bool active = running && (sq.mask & (1 << i));
-    if (active) {
-      bool highHalf = (now - sq.startMs) % sq.periodMs < sq.periodMs / 2;
-      duty = highHalf ? sq.dutyHigh : sq.dutyLow;
-    }
-    applyDuty(i, duty, active);
-
-    int64_t count = encoders[i].getCount();
-    if (speedDue && dt > 0) {
-      countsPerSec[i] = (count - lastCount[i]) / dt;
-      lastCount[i] = count;
-    }
-    status[i] = {duty, count, countsPerSec[i]};
+  float duty = 0;
+  if (activePin >= 0) {
+    bool highHalf = (now - test.startMs) % test.periodMs < test.periodMs / 2;
+    duty = highHalf ? test.dutyHigh : test.dutyLow;
+    ledcWrite(activePin, (uint32_t)(duty / 100.0f * PWM_MAX + 0.5f));
   }
 
-  portENTER_CRITICAL(&motorMux);
-  for (size_t i = 0; i < MOTOR_COUNT; i++) motorStatus[i] = status[i];
-  portEXIT_CRITICAL(&motorMux);
+  portENTER_CRITICAL(&testMux);
+  outputDuty = duty;
+  portEXIT_CRITICAL(&testMux);
 }
 
 void setup() {
   Serial.begin(SERIAL_BAUD);
-  setupMotors();
+  setupMotorPins();
   // setup() runs inside the loop task, so this is the task loop() runs in
   mainLoopTask = xTaskGetCurrentTaskHandle();
   xTaskCreatePinnedToCore(telemetryTask, "telemetry", TELEMETRY_STACK_BYTES, nullptr,
@@ -462,5 +440,5 @@ void setup() {
 // Core 1: time-critical work only
 void loop() {
   measureLoop();
-  runMotors();
+  runPwmTest();
 }

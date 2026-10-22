@@ -43,11 +43,12 @@ const els = {
   powerCards: document.querySelectorAll('.power'),
   testCard: document.getElementById('testCard'),
   testBadge: document.getElementById('testBadge'),
-  testMask: document.getElementById('testMask'),
+  testPin: document.getElementById('testPin'),
+  testDutyNow: document.getElementById('testDutyNow'),
+  pwmChartTitle: document.getElementById('pwmChartTitle'),
   testHigh: document.getElementById('testHigh'),
   testLow: document.getElementById('testLow'),
   testPeriod: document.getElementById('testPeriod'),
-  testCpr: document.getElementById('testCpr'),
   testStartBtn: document.getElementById('testStartBtn'),
   testStopBtn: document.getElementById('testStopBtn'),
   log: document.getElementById('log'),
@@ -125,40 +126,41 @@ const voltageChart = new LiveChart(document.getElementById('voltageChart'), {
   labels: chartLabels,
 });
 
-// Square-wave motor test: latest MOTORS report per motor
+// PWM test: a square wave of duty on one GPIO, reported back as PWMOUT
 const TEST_STATES = ['testIdle', 'testRunning', 'testWatchdog'];
-const CPR_STORAGE_KEY = 'esp32-dashboard-cpr';
-const newMotorRun = () => ({ duty: null, count: 0, cps: 0 });
-const motorRun = { 1: newMotorRun(), 2: newMotorRun() };
-let testState = null;   // null until the firmware reports MOTORS, then 0 idle / 1 running / 2 watchdog
-let simTimer = null;    // simulated test while demo data is on and no board is connected
+const TEST_PIN_STORAGE_KEY = 'esp32-dashboard-test-pin';
+// Output-safe pins the firmware accepts, with their board label and role in this project
+const TEST_PINS = [
+  [2, 'D2', 'roleLed'], [4, 'D4'], [5, 'D5'], [12, 'D12'], [13, 'D13'], [14, 'D14'], [15, 'D15'],
+  [16, 'RX2'], [17, 'TX2'], [18, 'D18', 'roleM2Ena'], [19, 'D19', 'roleM2In1'], [23, 'D23', 'roleM2In2'],
+  [25, 'D25', 'roleM1Ena'], [26, 'D26', 'roleM1In1'], [27, 'D27', 'roleM1In2'], [32, 'D32'], [33, 'D33'],
+];
+let testState = null;    // null until the firmware reports PWMOUT, then 0 idle / 1 running / 2 watchdog
+let testOutput = null;   // { pin, duty }
+let simTimer = null;     // simulated output while demo data is on and no board is connected
 
-function countsPerRev() {
-  const cpr = Number(els.testCpr.value);
-  return cpr > 0 ? cpr : 0;
-}
+const pinLabel = (gpio) => TEST_PINS.find(([g]) => g === gpio)?.[1] ?? `GPIO${gpio}`;
 
-function formatSpeed(cps) {
-  const cpr = countsPerRev();
-  return cpr ? `${Math.round((cps * 60) / cpr)} RPM` : `${Math.round(cps)} ${t('cpsUnit')}`;
-}
-
-const dutyChart = new LiveChart(document.getElementById('dutyChart'), {
-  series: motorSeries,
-  legend: document.getElementById('dutyLegend'),
+const pwmChart = new LiveChart(document.getElementById('pwmChart'), {
+  series: [{ key: 'pwm', label: () => t('tDuty'), short: '', color: '--accent' }],
   format: (d) => `${d.toFixed(0)} %`,
   minSpan: 20,
   windowMs: 20000,
   labels: chartLabels,
 });
-const speedChart = new LiveChart(document.getElementById('speedChart'), {
-  series: motorSeries,
-  legend: document.getElementById('speedLegend'),
-  format: (cps) => formatSpeed(cps),
-  minSpan: 100,
-  windowMs: 20000,
-  labels: chartLabels,
-});
+
+function renderTestPins() {
+  let selected = els.testPin.value;
+  if (!selected) {
+    try { selected = localStorage.getItem(TEST_PIN_STORAGE_KEY); } catch { /* storage unavailable */ }
+  }
+  els.testPin.innerHTML = '';
+  for (const [gpio, label, role] of TEST_PINS) {
+    const text = `${label} (GPIO${gpio})` + (role ? ` · ${t(role)}` : '');
+    els.testPin.add(new Option(text, String(gpio)));
+  }
+  els.testPin.value = TEST_PINS.some(([g]) => String(g) === selected) ? selected : '2';
+}
 
 let uptimeMs = null;
 let lastBeatAt = 0;     // performance.now() of the last heartbeat
@@ -368,14 +370,11 @@ function handleLine(line) {
     }
   }
 
-  if (type === 'MOTORS' && fields.length === 7) {
-    const [state, d1, c1, s1, d2, c2, s2] = fields.map(Number);
+  if (type === 'PWMOUT' && fields.length === 3) {
+    const [state, pin, duty] = fields.map(Number);
     testState = state;
-    for (const [m, duty, count, cps] of [[1, d1, c1, s1], [2, d2, c2, s2]]) {
-      motorRun[m] = { duty, count, cps };
-      dutyChart.push(m, duty);
-      speedChart.push(m, cps);
-    }
+    testOutput = { pin, duty };
+    pwmChart.push('pwm', duty);
     return;
   }
 
@@ -562,16 +561,10 @@ function renderTest(state) {
   els.testStartBtn.disabled = !((state === 'online' && supported) || (demo && !port));
   els.testStopBtn.disabled = !(simTimer !== null || (port && testState === 1));
 
-  const cpr = countsPerRev();
-  for (const row of els.testCard.querySelectorAll('[data-tmotor]')) {
-    const m = motorRun[row.dataset.tmotor];
-    const field = (name) => row.querySelector(`[data-tfield="${name}"]`);
-    const has = m.duty !== null;
-    field('duty').textContent = has ? `${m.duty.toFixed(0)} %` : '—';
-    field('speed').textContent = has ? formatSpeed(m.cps) : '—';
-    field('count').textContent = has ? Math.round(m.count).toLocaleString() : '—';
-    field('revs').textContent = has && cpr ? t('revs', { n: (m.count / cpr).toFixed(1) }) : '—';
-  }
+  const running = simTimer !== null || testState === 1;
+  const pin = running && testOutput?.pin >= 0 ? testOutput.pin : Number(els.testPin.value);
+  els.pwmChartTitle.textContent = t('pwmChartTitle', { pin: pinLabel(pin) });
+  els.testDutyNow.textContent = running && testOutput ? `${testOutput.duty.toFixed(0)} %` : '';
 }
 
 function log(message) {
@@ -658,9 +651,9 @@ function resetPowerData() {
 // ---------- Motor test ----------
 
 function readTestParams() {
-  const clampDuty = (v) => Math.max(-100, Math.min(100, Number(v) || 0));
+  const clampDuty = (v) => Math.max(0, Math.min(100, Number(v) || 0));
   return {
-    mask: Number(els.testMask.value),
+    pin: Number(els.testPin.value),
     high: clampDuty(els.testHigh.value),
     low: clampDuty(els.testLow.value),
     period: Math.max(200, Number(els.testPeriod.value) || 2000),
@@ -669,9 +662,8 @@ function readTestParams() {
 
 function startTest() {
   const p = readTestParams();
-  dutyChart.clear();
-  speedChart.clear();
-  if (port) send(`SQW,${p.mask},${p.high},${p.low},${p.period}`);
+  pwmChart.clear();
+  if (port) send(`PWM,${p.pin},${p.high},${p.low},${p.period}`);
   else if (demoTimer !== null) startSimTest(p);
   render();
 }
@@ -682,32 +674,13 @@ function stopTest() {
   render();
 }
 
-// Demo only: a first-order motor model (dead band, lag) answering the square wave,
-// reported through the same MOTORS line the firmware sends
+// Demo only: reports the same PWMOUT line the firmware would send
 function startSimTest(p) {
   stopSimTest();
-  const MAX_CPS = 4000;
-  const DEAD_BAND = 15;   // % duty before the motor starts to turn
-  const TAU_S = 0.15;
-  const sim = { 1: { speed: 0, count: 0 }, 2: { speed: 0, count: 0 } };
   const start = performance.now();
-  let last = start;
   simTimer = setInterval(() => {
-    const now = performance.now();
-    const dt = (now - last) / 1000;
-    last = now;
-    const highHalf = (now - start) % p.period < p.period / 2;
-    const parts = [];
-    for (const m of MOTORS) {
-      const duty = p.mask & (1 << (m - 1)) ? (highHalf ? p.high : p.low) : 0;
-      const drive = Math.max(0, Math.abs(duty) - DEAD_BAND) / (100 - DEAD_BAND);
-      const target = Math.sign(duty) * drive * MAX_CPS * (m === 2 ? 0.92 : 1);
-      sim[m].speed += (target - sim[m].speed) * Math.min(1, dt / TAU_S);
-      sim[m].count += sim[m].speed * dt;
-      const noise = Math.abs(sim[m].speed) > 1 ? (Math.random() - 0.5) * 40 : 0;
-      parts.push(duty.toFixed(1), Math.round(sim[m].count), Math.round(sim[m].speed + noise));
-    }
-    handleLine(`MOTORS,1,${parts.join(',')}`);
+    const highHalf = (performance.now() - start) % p.period < p.period / 2;
+    handleLine(`PWMOUT,1,${p.pin},${(highHalf ? p.high : p.low).toFixed(1)}`);
   }, 40);
 }
 
@@ -716,30 +689,26 @@ function stopSimTest() {
   clearInterval(simTimer);
   simTimer = null;
   testState = 0;
-  for (const m of MOTORS) motorRun[m] = { ...motorRun[m], duty: 0, cps: 0 };
+  testOutput = null;
 }
 
 function resetTestData() {
   testState = null;
-  for (const m of MOTORS) motorRun[m] = newMotorRun();
-  dutyChart.clear();
-  speedChart.clear();
+  testOutput = null;
+  pwmChart.clear();
 }
 
 els.testStartBtn.addEventListener('click', startTest);
 els.testStopBtn.addEventListener('click', stopTest);
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') stopTest(); });
 
-try {
-  const savedCpr = localStorage.getItem(CPR_STORAGE_KEY);
-  if (savedCpr) els.testCpr.value = savedCpr;
-} catch { /* storage unavailable */ }
-els.testCpr.addEventListener('input', () => {
-  try { localStorage.setItem(CPR_STORAGE_KEY, els.testCpr.value); } catch { /* storage unavailable */ }
+renderTestPins();
+els.testPin.addEventListener('change', () => {
+  try { localStorage.setItem(TEST_PIN_STORAGE_KEY, els.testPin.value); } catch { /* storage unavailable */ }
   render();
 });
 
-// Tells the firmware the page is alive; without it the motors stop after 1 s
+// Tells the firmware the page is alive; without it the PWM test stops after 1 s
 setInterval(() => { if (port) send('PING'); }, 200);
 
 document.querySelectorAll('[data-pfield="demo"]').forEach((b) => b.addEventListener('click', () => {
@@ -815,8 +784,7 @@ I18N.onChange(() => {
   renderThemeButton();
   currentChart.renderLegend();
   voltageChart.renderLegend();
-  dutyChart.renderLegend();
-  speedChart.renderLegend();
+  renderTestPins();
   render();
   if ('serial' in navigator) refreshPorts();
 });
