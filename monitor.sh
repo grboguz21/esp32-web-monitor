@@ -1,0 +1,1 @@
+file:///home/oguz/Documents/PlatformIO/Projects/ESP32_Advanced_Motor_Controller/dashboard/index.html
