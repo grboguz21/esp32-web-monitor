@@ -788,3 +788,9 @@ h2[data-help] {
 .badge[data-level="run"] { background: color-mix(in srgb, var(--online) 18%, transparent); color: var(--online); }
 .field-hint { font-size: 0.68rem; color: var(--muted); min-height: 1em; }
 .badge[data-level="done"] { background: var(--secondary-bg); color: var(--text); }
+
+/* Oscilloscope */
+.scope-tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 12px; }
+@media (max-width: 900px) { .scope-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.scope-plot { height: 260px; }
+.scope[data-stale] { opacity: 0.45; }

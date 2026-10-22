@@ -2,6 +2,8 @@
 #include <Wire.h>
 #include <Adafruit_INA219.h>
 #include <esp_system.h>
+#include <driver/gpio.h>
+#include <soc/gpio_reg.h>
 
 constexpr uint32_t SERIAL_BAUD = 115200;
 constexpr uint32_t HEARTBEAT_INTERVAL_MS = 500;
@@ -52,7 +54,19 @@ constexpr uint32_t PWM_UPDATE_MS = 5;
 constexpr uint32_t PWM_WATCHDOG_MS = 1000;   // stop if the dashboard goes quiet this long
 constexpr uint32_t PWM_REPORT_MS = 40;       // 25 Hz
 
-constexpr const char* FIRMWARE_VERSION = "0.8.0";
+// Oscilloscope snapshots, captured on core 0 when the dashboard asks for one
+constexpr int SCOPE_DIGITAL_PINS[] = {2, 4, 5, 12, 13, 14, 15, 16, 17, 18, 19, 23, 25, 26, 27,
+                                      32, 33, 34, 35, 36, 39};
+constexpr int SCOPE_ANALOG_PINS[] = {32, 33, 34, 35, 36, 39};   // ADC1 only
+constexpr uint32_t SCOPE_MAX_SAMPLES = 1000;
+constexpr uint32_t SCOPE_MIN_HZ = 100;
+constexpr uint32_t SCOPE_DIGITAL_MAX_HZ = 200000;
+constexpr uint32_t SCOPE_ANALOG_MAX_HZ = 5000;       // analogReadMilliVolts() is the bottleneck
+constexpr uint32_t SCOPE_TRIGGER_TIMEOUT_MS = 50;
+constexpr uint16_t SCOPE_ANALOG_TRIGGER_MV = 1650;
+constexpr size_t SERIAL_TX_BUFFER = 4096;            // a snapshot line is up to ~3 KB
+
+constexpr const char* FIRMWARE_VERSION = "0.9.0";
 
 // Protocol (one message per line):
 //   ESP32 -> PC : HB,<uptime_ms>               heartbeat
@@ -67,12 +81,18 @@ constexpr const char* FIRMWARE_VERSION = "0.8.0";
 //                 PWMOUT,<state>,<pin>,<duty>,<freq_hz>,<remaining_ms>
 //                 (state 0 idle, 1 running, 2 stopped by the watchdog, 3 duration finished;
 //                  duty in % on that pin; remaining_ms is 0 when the test has no duration)
+//                 SCOPE,<D|A>,<pin>,<rate_hz>,<samples>,<triggered>,<data>
+//                 (digital: one hex digit per 4 samples, first sample in the top bit;
+//                  analog: three hex digits per sample in mV; rate_hz is the measured rate)
+//                 SCOPE,E,<pin|busy>             capture refused
 //   PC -> ESP32 : HELLO?                       request HELLO and INFO
 //                 PING                         dashboard is alive (keeps the PWM test allowed)
 //                 PWM,<pin>,<high>,<low>,<period_ms>,<freq_hz>,<duration_ms>
 //                                              square wave of duty (0..100 %) on a GPIO;
 //                                              duration_ms 0 runs until STOP
 //                 STOP                         stop the PWM test
+//                 SCOPE,<D|A>,<pin>,<rate_hz>,<samples>
+//                                              capture one oscilloscope snapshot
 
 struct LoopStats {
   uint32_t lastStartUs = 0;
@@ -171,6 +191,94 @@ void printInfo() {
                 resetReasonName(esp_reset_reason()));
 }
 
+template <size_t N>
+bool pinInList(const int (&list)[N], int pin) {
+  for (int p : list) if (p == pin) return true;
+  return false;
+}
+
+uint16_t scopeBuffer[SCOPE_MAX_SAMPLES];
+
+inline uint16_t readDigitalLevel(int pin) {
+  return pin < 32 ? (REG_READ(GPIO_IN_REG) >> pin) & 1 : (REG_READ(GPIO_IN1_REG) >> (pin - 32)) & 1;
+}
+
+// Blocks the telemetry task for the capture (at most ~0.25 s at the slowest analog rate)
+void captureScope(char mode, int pin, uint32_t rateHz, uint32_t samples) {
+  bool digital = mode == 'D';
+  if (!(digital ? pinInList(SCOPE_DIGITAL_PINS, pin) : pinInList(SCOPE_ANALOG_PINS, pin))) {
+    Serial.printf("SCOPE,E,pin\n");
+    return;
+  }
+  portENTER_CRITICAL(&testMux);
+  bool pinBusy = !digital && testState == TestState::Running && pwmTest.pin == pin;
+  portEXIT_CRITICAL(&testMux);
+  if (pinBusy) {   // analogRead would take the pin away from the PWM output
+    Serial.printf("SCOPE,E,busy\n");
+    return;
+  }
+
+  samples = constrain(samples, 16, SCOPE_MAX_SAMPLES) & ~3u;
+  rateHz = constrain(rateHz, SCOPE_MIN_HZ, digital ? SCOPE_DIGITAL_MAX_HZ : SCOPE_ANALOG_MAX_HZ);
+  if (digital) gpio_input_enable((gpio_num_t)pin);   // lets us read back a pin that is an output
+  auto read = [&]() -> uint16_t { return digital ? readDigitalLevel(pin) : analogReadMilliVolts(pin); };
+
+  // Start on a rising crossing so repeated snapshots line up on screen
+  uint16_t threshold = digital ? 1 : SCOPE_ANALOG_TRIGGER_MV;
+  bool triggered = false;
+  uint32_t waitStart = millis();
+  uint16_t prev = read();
+  while (millis() - waitStart < SCOPE_TRIGGER_TIMEOUT_MS) {
+    uint16_t v = read();
+    if (prev < threshold && v >= threshold) {
+      triggered = true;
+      break;
+    }
+    prev = v;
+  }
+
+  // Pace samples on the CPU cycle counter; if reads are slower than the period, the
+  // measured rate below reports how fast we really went
+  uint32_t cyclesPerSecond = ESP.getCpuFreqMHz() * 1000000UL;
+  uint32_t period = cyclesPerSecond / rateHz;
+  uint32_t start = ESP.getCycleCount();
+  uint32_t next = start;
+  for (uint32_t i = 0; i < samples; i++) {
+    while ((int32_t)(ESP.getCycleCount() - next) < 0) {}
+    scopeBuffer[i] = read();
+    next += period;
+  }
+  uint32_t elapsed = ESP.getCycleCount() - start;
+  float actualHz = elapsed ? (float)(samples - 1) * cyclesPerSecond / elapsed : rateHz;
+
+  Serial.printf("SCOPE,%c,%d,%.0f,%lu,%u,", mode, pin, actualHz, (unsigned long)samples, triggered ? 1 : 0);
+  static const char HEX_DIGITS[] = "0123456789ABCDEF";
+  char chunk[96];
+  size_t n = 0;
+  auto put = [&](char c) {
+    chunk[n++] = c;
+    if (n == sizeof(chunk)) {
+      Serial.write((const uint8_t*)chunk, n);
+      n = 0;
+    }
+  };
+  if (digital) {
+    for (uint32_t i = 0; i < samples; i += 4) {
+      put(HEX_DIGITS[(scopeBuffer[i] << 3) | (scopeBuffer[i + 1] << 2) |
+                     (scopeBuffer[i + 2] << 1) | scopeBuffer[i + 3]]);
+    }
+  } else {
+    for (uint32_t i = 0; i < samples; i++) {
+      uint16_t mv = min<uint16_t>(scopeBuffer[i], 0xFFF);
+      put(HEX_DIGITS[(mv >> 8) & 0xF]);
+      put(HEX_DIGITS[(mv >> 4) & 0xF]);
+      put(HEX_DIGITS[mv & 0xF]);
+    }
+  }
+  put('\n');
+  Serial.write((const uint8_t*)chunk, n);
+}
+
 void printPwmConfig() {
   Serial.printf("PWMCFG,%lu,%u\n", (unsigned long)PWM_DEFAULT_FREQ_HZ, (unsigned)PWM_BITS);
 }
@@ -188,6 +296,14 @@ void handleCommand(const String& cmd) {
     portENTER_CRITICAL(&testMux);
     testState = TestState::Idle;
     portEXIT_CRITICAL(&testMux);
+  } else if (cmd.startsWith("SCOPE,")) {
+    char mode;
+    int pin;
+    unsigned long rate, samples;
+    if (sscanf(cmd.c_str(), "SCOPE,%c,%d,%lu,%lu", &mode, &pin, &rate, &samples) == 4 &&
+        (mode == 'D' || mode == 'A')) {
+      captureScope(mode, pin, rate, samples);
+    }
   } else if (cmd.startsWith("PWM,")) {
     int pin;
     float high, low;
@@ -456,6 +572,7 @@ void runPwmTest() {
 }
 
 void setup() {
+  Serial.setTxBufferSize(SERIAL_TX_BUFFER);
   Serial.begin(SERIAL_BAUD);
   setupMotorPins();
   // setup() runs inside the loop task, so this is the task loop() runs in

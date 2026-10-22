@@ -237,3 +237,133 @@ function niceStep(raw) {
   const n = raw / pow;
   return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * pow;
 }
+
+// One oscilloscope snapshot: samples at a fixed rate, time on x from 0 to the window
+// length, volts on y. Digital snapshots are drawn as steps between 0 V and 3.3 V.
+class ScopePlot {
+  constructor(container, { labels }) {
+    this.container = container;
+    this.labels = labels;       // { empty(), value(sample, digital) }
+    this.data = null;           // { digital, rate, values }
+    this.hoverX = null;
+
+    this.canvas = document.createElement('canvas');
+    this.tip = document.createElement('div');
+    this.tip.className = 'chart-tip';
+    this.tip.hidden = true;
+    container.append(this.canvas, this.tip);
+
+    this.canvas.addEventListener('mousemove', (e) => { this.hoverX = e.offsetX; this.draw(); });
+    this.canvas.addEventListener('mouseleave', () => { this.hoverX = null; this.draw(); });
+    new ResizeObserver(() => this.draw()).observe(container);
+  }
+
+  setData(data) {
+    this.data = data;
+    this.draw();
+  }
+
+  draw() {
+    const w = this.container.clientWidth;
+    const h = this.container.clientHeight;
+    if (!w || !h) return;
+
+    const css = getComputedStyle(document.documentElement);
+    const token = (name) => css.getPropertyValue(name).trim();
+    const dpr = window.devicePixelRatio || 1;
+    if (this.canvas.width !== w * dpr || this.canvas.height !== h * dpr) {
+      this.canvas.width = w * dpr;
+      this.canvas.height = h * dpr;
+      this.canvas.style.width = `${w}px`;
+      this.canvas.style.height = `${h}px`;
+    }
+    const ctx = this.canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    ctx.font = '11px system-ui, sans-serif';
+
+    const pad = { left: 52, right: 14, top: 10, bottom: 24 };
+    const pw = w - pad.left - pad.right;
+    const ph = h - pad.top - pad.bottom;
+    ctx.fillStyle = token('--muted');
+
+    const d = this.data;
+    if (!d || d.values.length < 2) {
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(this.labels.empty(), pad.left + pw / 2, pad.top + ph / 2);
+      this.tip.hidden = true;
+      return;
+    }
+
+    const n = d.values.length;
+    const windowS = (n - 1) / d.rate;
+    const useUs = windowS < 0.002;
+    const timeLabel = (s) => (useUs ? `${Math.round(s * 1e6)} µs` : `${(s * 1000).toFixed(s * 1000 < 10 ? 2 : 1)} ms`);
+    const toMv = (v) => (d.digital ? v * 3300 : v);
+    const x = (i) => pad.left + (i / (n - 1)) * pw;
+    const y = (mv) => pad.top + (1 - mv / 3300) * ph;
+
+    // Grid: 0..3.3 V
+    ctx.strokeStyle = token('--border');
+    ctx.lineWidth = 1;
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    const ticks = d.digital ? [0, 3300] : [0, 1000, 2000, 3000];
+    for (const mv of ticks) {
+      const py = Math.round(y(mv)) + 0.5;
+      ctx.beginPath();
+      ctx.moveTo(pad.left, py);
+      ctx.lineTo(w - pad.right, py);
+      ctx.stroke();
+      ctx.fillText(`${(mv / 1000).toFixed(mv % 1000 ? 1 : 0)} V`, pad.left - 8, py);
+    }
+    ctx.textBaseline = 'alphabetic';
+    for (const f of [0, 0.5, 1]) {
+      ctx.textAlign = f === 0 ? 'left' : f === 1 ? 'right' : 'center';
+      ctx.fillText(timeLabel(windowS * f), pad.left + f * pw, h - 6);
+    }
+
+    // Trace
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(pad.left, 0, pw, h);
+    ctx.clip();
+    ctx.strokeStyle = token('--accent');
+    ctx.lineWidth = 2;
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(x(0), y(toMv(d.values[0])));
+    for (let i = 1; i < n; i++) {
+      if (d.digital) ctx.lineTo(x(i), y(toMv(d.values[i - 1])));
+      ctx.lineTo(x(i), y(toMv(d.values[i])));
+    }
+    ctx.stroke();
+    ctx.restore();
+
+    if (this.hoverX === null || this.hoverX < pad.left) {
+      this.tip.hidden = true;
+      return;
+    }
+    const i = Math.max(0, Math.min(n - 1, Math.round(((this.hoverX - pad.left) / pw) * (n - 1))));
+    ctx.strokeStyle = token('--muted');
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(Math.round(x(i)) + 0.5, pad.top);
+    ctx.lineTo(Math.round(x(i)) + 0.5, pad.top + ph);
+    ctx.stroke();
+    ctx.fillStyle = token('--accent');
+    ctx.strokeStyle = token('--surface');
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(x(i), y(toMv(d.values[i])), 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    this.tip.textContent = `${timeLabel(i / d.rate)} · ${this.labels.value(d.values[i], d.digital)}`;
+    this.tip.hidden = false;
+    const tipX = x(i) + 12 + this.tip.offsetWidth > w ? x(i) - 12 - this.tip.offsetWidth : x(i) + 12;
+    this.tip.style.left = `${Math.max(tipX, 0)}px`;
+    this.tip.style.top = `${pad.top}px`;
+  }
+}

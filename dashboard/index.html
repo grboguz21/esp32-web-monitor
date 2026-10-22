@@ -303,6 +303,46 @@
           </div>
           <div class="chart" id="pwmChart"></div>
         </section>
+        <section class="card scope" id="scopeCard">
+          <div class="card-head">
+            <h2 data-i18n="scopeTitle">Oscilloscope</h2>
+            <span class="badge" id="scopeBadge"></span>
+          </div>
+          <div class="test-controls">
+            <label class="field"><span data-i18n="scopeMode">Mode</span>
+              <select id="scopeMode">
+                <option value="D" data-i18n="scopeDigital">Digital</option>
+                <option value="A" data-i18n="scopeAnalog">Analog</option>
+              </select>
+            </label>
+            <label class="field"><span data-i18n="testPin">Pin</span>
+              <select id="scopePin"></select>
+            </label>
+            <label class="field"><span data-i18n="scopeRate">Sample rate</span>
+              <select id="scopeRate"></select>
+              <small class="field-hint" data-i18n="scopeRateHint">at least 10× the signal frequency</small>
+            </label>
+            <label class="field"><span data-i18n="scopeSamples">Samples</span>
+              <select id="scopeSamples">
+                <option value="250">250</option>
+                <option value="500">500</option>
+                <option value="1000" selected>1000</option>
+              </select>
+            </label>
+            <div class="test-buttons">
+              <button id="scopeRunBtn" class="btn"></button>
+              <button id="scopeSingleBtn" class="btn btn-secondary" data-i18n="scopeSingle">Single</button>
+            </div>
+          </div>
+          <p class="test-warning" data-i18n="scopeHint">Digital reads any pin directly. Analog works on D32–D35, VP and VN.</p>
+          <div class="tiles scope-tiles">
+            <div class="tile"><div class="tile-label" data-i18n="scopeFreq">Frequency</div><div class="tile-value" id="scopeM1">—</div></div>
+            <div class="tile"><div class="tile-label" id="scopeL2"></div><div class="tile-value" id="scopeM2">—</div></div>
+            <div class="tile"><div class="tile-label" data-i18n="scopeAvg">Average</div><div class="tile-value" id="scopeM3">—</div></div>
+            <div class="tile"><div class="tile-label" data-i18n="scopeSampling">Sampling</div><div class="tile-value" id="scopeM4">—</div><div class="tile-sub" id="scopeM4Sub">—</div></div>
+          </div>
+          <div class="chart scope-plot" id="scopePlot"></div>
+        </section>
       </div>
 
       <div class="tab-panel" data-panel="board" hidden>
