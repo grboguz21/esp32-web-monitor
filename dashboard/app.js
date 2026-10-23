@@ -66,6 +66,8 @@ const els = {
   spdErrorNow: document.getElementById('spdErrorNow'),
   spdDutyNow: document.getElementById('spdDutyNow'),
   spdDutySplit: document.getElementById('spdDutySplit'),
+  spdProfile: document.getElementById('spdProfile'),
+  spdDefaultsBtn: document.getElementById('spdDefaultsBtn'),
   mvBadge: document.getElementById('mvBadge'),
   mvMotor: document.getElementById('mvMotor'),
   mvUnit: document.getElementById('mvUnit'),
@@ -127,6 +129,10 @@ let device = null;      // { name, version }
 let info = null;        // chip info and reset reason, from INFO
 let health = null;      // latest HEALTH values
 let battery = null;     // { volts, measured } from BATT
+// Motor profiles live on the board (flash); the page reads them on connect and edits them
+const boardProfile = { 1: null, 2: null };   // { cpr, invert, kickPlus, kickMinus, kp, ki, tauMs, ka, maxRpm, ffPlus, ffMinus }
+const profileSaved = { 1: false, 2: false };
+const saveTimers = {};
 // 3S Li-ion: 12.6 V full, warn below 10.2 V, critical below 9.6 V
 const BATT_FULL_V = 12.6;
 const BATT_EMPTY_V = 9.6;
@@ -398,6 +404,10 @@ async function closePort() {
   resetEncData();
   spd = null;
   battery = null;
+  for (const m of MOTORS) {
+    boardProfile[m] = null;
+    profileSaved[m] = false;
+  }
   spdChart.clear();
   mv = null;
   mvChart.clear();
@@ -449,7 +459,7 @@ function handleLine(line) {
   if (type === 'HELLO' && fields.length === 2) {
     device = { name: fields[0], version: fields[1] };
     log(t('log.identified', device));
-    sendEncoderSettings();   // the firmware starts with no sign flips after a reset
+    for (const m of MOTORS) send(`PROFILE?,${m}`);   // the board keeps each motor's settings
     return;
   }
 
@@ -461,6 +471,34 @@ function handleLine(line) {
     };
     const [label, level] = resetReason(info.resetReason);
     if (level === 'bad') log(t('log.resetWarn', { reason: label }));
+    return;
+  }
+
+  if (type === 'PROFILE' && fields.length === 10) {
+    const [m, cpr, invert, kickPlus, kickMinus, kp, ki, tauMs, ka, maxRpm] = fields.map(Number);
+    if (!(m in boardProfile)) return;
+    boardProfile[m] = { ...boardProfile[m], cpr, invert: invert === 1, kickPlus, kickMinus, kp, ki, tauMs, ka, maxRpm };
+    profileSaved[m] = true;
+    // The encoder card and RPM conversions follow the board
+    encSettings.cpr[m] = cpr;
+    encSettings.invert[m] = invert === 1;
+    saveEnc();
+    if (Number(els.spdMotor.value) === m) fillGainFields(m);
+    return;
+  }
+
+  if (type === 'FF' && fields.length === 3) {
+    const m = Number(fields[0]);
+    if (!boardProfile[m]) return;
+    const points = fields[2].split(';').map((p) => p.split(':').map(Number));
+    boardProfile[m][fields[1] === '+' ? 'ffPlus' : 'ffMinus'] = points;
+    return;
+  }
+
+  if (type === 'SAVED' && fields.length === 2) {
+    const m = Number(fields[0]);
+    profileSaved[m] = fields[1] === '1';
+    log(t(profileSaved[m] ? 'log.saved' : 'log.saveFailed', { m }));
     return;
   }
 
@@ -803,7 +841,7 @@ const mvDetail = (counts) => {
 function mvEstimate() {
   const amount = Math.abs(Number(els.mvAmount.value) || 0);
   const turns = els.mvUnit.value === 'm' ? amount / (Math.PI * mvWheelM()) : amount;
-  const maxRpm = Math.max(40, Math.min(1100, Number(els.mvMaxRpm.value) || 300));
+  const maxRpm = Math.max(40, Math.min(boardProfile[mvMotor ?? els.mvMotor.value]?.maxRpm ?? 1100, Number(els.mvMaxRpm.value) || 300));
   const accel = Math.max(100, Math.min(20000, Number(els.mvAccel.value) || 1500));
   const v = maxRpm / 60;    // rev/s
   const a = accel / 60;     // rev/s^2
@@ -857,6 +895,7 @@ function renderMove(state) {
 }
 
 function renderSpd(state) {
+  renderProfile();
   const supported = state === 'online' && spd !== null;
   const running = supported && spdRunning();
   els.spdBadge.textContent = !supported ? t('sensorWaiting') : running ? t('testRunning') : t('testIdle');
@@ -983,32 +1022,61 @@ function resetPowerData() {
 
 // ---------- Encoder ----------
 
-// The firmware starts with defaults after every reset, so the page re-sends its settings
-function sendEncoderSettings() {
-  for (const m of MOTORS) {
-    send(`ENCINV,${m},${encSettings.invert[m] ? 1 : 0}`);
-    if (encSettings.cpr[m] > 0) send(`CPR,${m},${encSettings.cpr[m]}`);
-  }
-  sendGains();
+// Changes go to the board right away and are saved to its flash a moment later, once the
+// typing has stopped (the board itself waits until no motor runs before writing)
+function scheduleSave(m) {
+  if (!port) return;
+  profileSaved[m] = false;
+  clearTimeout(saveTimers[m]);
+  saveTimers[m] = setTimeout(() => send(`SAVE,${m}`), 1000);
 }
 
 // ---------- Speed control ----------
 
+function fillGainFields(m) {
+  const p = boardProfile[m];
+  if (!p) return;
+  els.spdKp.value = p.kp;
+  els.spdKi.value = p.ki;
+  els.spdTauRef.value = p.tauMs;
+  els.spdKa.value = p.ka;
+  els.spdTarget.max = p.maxRpm;
+  els.spdTarget.min = -p.maxRpm;
+}
+
 function sendGains() {
+  const m = Number(els.spdMotor.value);
   const kp = Math.max(0, Number(els.spdKp.value) || 0);
   const ki = Math.max(0, Number(els.spdKi.value) || 0);
   const tauRef = Math.max(5, Number(els.spdTauRef.value) || 100);
   const ka = Math.max(0, Number(els.spdKa.value) || 0);
-  if (port) {
-    send(`GAIN,${kp},${ki}`);
-    send(`REF,${tauRef},${ka}`);
+  if (!port) return;
+  send(`GAIN,${kp},${ki},${m}`);
+  send(`REF,${tauRef},${ka},${m}`);
+  if (boardProfile[m]) Object.assign(boardProfile[m], { kp, ki, tauMs: tauRef, ka });
+}
+
+function renderProfile() {
+  const m = Number(els.spdMotor.value);
+  const p = boardProfile[m];
+  els.spdDefaultsBtn.disabled = !port || !p;
+  if (!p) {
+    els.spdProfile.textContent = t('profileWaiting');
+    return;
   }
+  const b = (v) => `<b>${v}</b>`;
+  const text = t('profileSummary', {
+    kp: b(num(p.kickPlus, 1)), km: b(num(p.kickMinus, 1)), max: b(Math.round(p.maxRpm)),
+    np: b(p.ffPlus?.length ?? 0), nm: b(p.ffMinus?.length ?? 0),
+  });
+  els.spdProfile.innerHTML = text + (profileSaved[m] ? ` · ${t('profileSaved')}` : '');
 }
 
 function startSpeed() {
   stopSimTest();
   sendGains();
-  const target = Math.max(-1200, Math.min(1200, Number(els.spdTarget.value) || 0));
+  const limit = boardProfile[els.spdMotor.value]?.maxRpm ?? 1200;
+  const target = Math.max(-limit, Math.min(limit, Number(els.spdTarget.value) || 0));
   if (port) send(`SPEED,${els.spdMotor.value},${target},${els.spdMode.value}`);
   render();
 }
@@ -1029,7 +1097,23 @@ els.spdStopBtn.addEventListener('click', stopTest);
 for (const el of [els.spdTarget, els.spdMode]) {
   el.addEventListener('change', () => { if (spdRunning()) startSpeed(); });
 }
-for (const el of [els.spdKp, els.spdKi, els.spdTauRef, els.spdKa]) el.addEventListener('change', sendGains);
+for (const el of [els.spdKp, els.spdKi, els.spdTauRef, els.spdKa]) {
+  el.addEventListener('change', () => {
+    sendGains();
+    scheduleSave(Number(els.spdMotor.value));
+    render();
+  });
+}
+els.spdMotor.addEventListener('change', () => {
+  fillGainFields(Number(els.spdMotor.value));
+  render();
+});
+els.spdDefaultsBtn.addEventListener('click', () => {
+  const m = Number(els.spdMotor.value);
+  if (!port || !confirm(t('profileConfirm', { m }))) return;
+  send(`DEFAULTS,${m}`);   // the board answers with the new profile
+  scheduleSave(m);
+});
 renderSpdMotors();
 
 // ---------- Distance test ----------
@@ -1059,7 +1143,7 @@ function startMove() {
   const amount = Number(els.mvAmount.value) || 0;
   const turns = els.mvUnit.value === 'm' ? amount / (Math.PI * mvWheelM()) : amount;
   const counts = Math.round(turns * mvCpr());
-  const maxRpm = Math.max(40, Math.min(1100, Number(els.mvMaxRpm.value) || 300));
+  const maxRpm = Math.max(40, Math.min(boardProfile[mvMotor ?? els.mvMotor.value]?.maxRpm ?? 1100, Number(els.mvMaxRpm.value) || 300));
   const accel = Math.max(100, Math.min(20000, Number(els.mvAccel.value) || 1500));
   if (counts === 0) return;
   sendGains();
@@ -1152,6 +1236,8 @@ for (const row of els.encCard.querySelectorAll('[data-emotor]')) {
     if (!count) return;
     encSettings.cpr[m] = Math.round((count / turns) * 100) / 100;
     saveEnc();
+    if (port) send(`CPR,${m},${encSettings.cpr[m]}`);
+    scheduleSave(m);
     encChart.clear();
     render();
   });
@@ -1160,6 +1246,10 @@ for (const row of els.encCard.querySelectorAll('[data-emotor]')) {
     if (cpr > 0) encSettings.cpr[m] = cpr;
     else delete encSettings.cpr[m];
     saveEnc();
+    if (port && cpr > 0) {
+      send(`CPR,${m},${cpr}`);
+      scheduleSave(m);
+    }
     encChart.clear();
     render();
   });
@@ -1167,6 +1257,7 @@ for (const row of els.encCard.querySelectorAll('[data-emotor]')) {
     encSettings.invert[m] = field('invert').checked;
     saveEnc();
     if (port) send(`ENCINV,${m},${encSettings.invert[m] ? 1 : 0}`);
+    scheduleSave(m);
     render();
   });
 }

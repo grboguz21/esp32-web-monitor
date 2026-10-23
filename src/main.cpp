@@ -3,6 +3,7 @@
 #include <Adafruit_INA219.h>
 #include <ESP32Encoder.h>
 #include <esp_system.h>
+#include <Preferences.h>
 
 constexpr uint32_t SERIAL_BAUD = 460800;   // room for the 200 Hz log next to the telemetry
 constexpr uint32_t HEARTBEAT_INTERVAL_MS = 500;
@@ -90,7 +91,7 @@ struct FfPoint {
   float rpm;
   float duty;   // % that holds this speed in steady state
 };
-// Motor 1 steady-state sweep (12 V, 1 kHz PWM); the 0 RPM point is the stop threshold
+// Defaults: motor 1 steady-state sweep (12 V, 1 kHz PWM); the 0 RPM point is the stop threshold
 constexpr FfPoint FF_PLUS[] = {
   {0, 11.6}, {50.3, 12}, {71.6, 13}, {109.9, 15}, {146.2, 17}, {191.1, 20}, {256.6, 25},
   {320.9, 30}, {440.7, 40}, {558.8, 50}, {675.3, 60}, {892.8, 80}, {1115.1, 100},
@@ -98,6 +99,30 @@ constexpr FfPoint FF_PLUS[] = {
 constexpr FfPoint FF_MINUS[] = {
   {0, 10.0}, {25.3, 11}, {56.9, 12}, {78.4, 13}, {118.1, 15}, {153.5, 17}, {199.4, 20},
   {268.0, 25}, {331.2, 30}, {453.6, 40}, {574.4, 50}, {689.9, 60}, {905.8, 80}, {1127.0, 100},
+};
+constexpr float DEFAULT_MAX_RPM = 1100.0f;
+
+// Everything that differs from one motor to the next. Each motor has its own, kept in flash
+// (SAVE) and loaded at boot; a different motor only needs a new profile, not new firmware.
+constexpr size_t FF_MAX_POINTS = 16;
+struct FfTable {
+  uint8_t count;
+  FfPoint points[FF_MAX_POINTS];   // rising rpm; the last point's duty holds above it
+};
+constexpr uint32_t PROFILE_VERSION = 1;
+struct MotorProfile {
+  uint32_t version;
+  float cpr;
+  uint8_t invert;
+  float kickPlus;    // % start thresholds (breakaway kick starts here)
+  float kickMinus;
+  float kp;          // V per RPM
+  float ki;          // V per RPM*s
+  float tauRefS;
+  float ka;          // V per RPM/s
+  float maxRpm;
+  FfTable ffPlus;
+  FfTable ffMinus;
 };
 
 enum class RunMode : uint8_t { OpenLoop = 0, Feedforward = 1, FeedforwardPi = 2, Move = 3 };
@@ -109,7 +134,7 @@ constexpr int32_t MOVE_TOLERANCE_COUNTS = 2;   // close enough: start braking
 constexpr uint32_t MOVE_BRAKE_MS = 300;        // both inputs low (short-circuit brake), then coast
 enum class MovePhase : uint8_t { Idle = 0, Moving = 1, Braking = 2, Done = 3, Aborted = 4 };
 
-constexpr const char* FIRMWARE_VERSION = "0.20.0";
+constexpr const char* FIRMWARE_VERSION = "0.21.0";
 
 // Protocol (one message per line):
 //   ESP32 -> PC : HB,<uptime_ms>               heartbeat
@@ -130,6 +155,9 @@ constexpr const char* FIRMWARE_VERSION = "0.20.0";
 //                 DUTYOUT,<duty1>,<duty2>      duty driven on each motor right now (any mode)
 //                 SPD,<mode>,<target_rpm>,<ref_rpm>,<speed_rpm>,<ff_duty>,<pi_duty>
 //                 BATT,<supply_V>,<measured 0|1>  supply the controller uses (0: SUPPLY_V assumed)
+//                 PROFILE,<motor>,<cpr>,<invert>,<kick+>,<kick->,<kp>,<ki>,<tau_ms>,<ka>,<max_rpm>
+//                 FF,<motor>,<+|->,<rpm>:<duty>;...   that motor's feedforward curve
+//                 SAVED,<motor>,<ok>               profile written to flash
 //                 MOVE,<phase>,<target_counts>,<position_counts>,<profile_rpm>,<final_error_counts>
 //                 (phase 0 idle, 1 moving, 2 braking, 3 done, 4 aborted; position from the start)
 //                 (speed control of the running motor; mode 0 open loop, 1 FF, 2 FF + PI)
@@ -145,6 +173,13 @@ constexpr const char* FIRMWARE_VERSION = "0.20.0";
 //                 DUTY,<duty1>,<duty2>,<duration_ms>
 //                                              drive both motors open loop at once (0 = coast)
 //                 STOP                         stop the motor
+//                 PROFILE?,<motor>             print that motor's profile (PROFILE + two FF lines)
+//                 GAIN,<kp>,<ki>[,<motor>]     / REF,<tau_ms>,<ka>[,<motor>]: no motor = both
+//                 KICK,<motor>,<plus>,<minus>  start thresholds, %
+//                 MAXRPM,<motor>,<rpm>
+//                 FF,<motor>,<+|->,<rpm>:<duty>;...   replace a feedforward curve
+//                 SAVE,<motor>                 keep the profile in flash (written once idle)
+//                 DEFAULTS,<motor>             back to the built-in profile (not saved until SAVE)
 //                 ENCZERO,<motor>              zero that motor's encoder count
 //                 ENCINV,<motor>,<0|1>         flip that encoder's sign
 //                 LOG,<0|1>                    stream the 200 Hz control ticks
@@ -191,10 +226,8 @@ RunState runState = RunState::Idle;
 uint32_t lastPingMs = 0;
 float outputDuty = 0;   // duty currently driven, signed
 float motorDuty[MOTOR_COUNT] = {};   // duty on each motor right now
-float gainKp = DEFAULT_KP;
-float gainKi = DEFAULT_KI;
-float refTauS = DEFAULT_TAU_REF_S;
-float gainKa = DEFAULT_KA;
+MotorProfile profiles[MOTOR_COUNT];   // under runMux; cpr and invert live in motorCpr / encoderInvert
+bool profileSavePending[MOTOR_COUNT] = {};
 float measuredSupplyV = SUPPLY_V;   // filtered INA219 bus voltage, written on core 0
 uint32_t supplyMeasuredMs = 0;      // millis() of the last good reading, 0 = never
 float motorCpr[MOTOR_COUNT] = {DEFAULT_CPR, DEFAULT_CPR};
@@ -300,6 +333,123 @@ void printInfo() {
                 resetReasonName(esp_reset_reason()));
 }
 
+// ---------- Motor profiles ----------
+
+MotorProfile defaultProfile() {
+  MotorProfile p = {};
+  p.version = PROFILE_VERSION;
+  p.cpr = DEFAULT_CPR;
+  p.invert = 0;
+  p.kickPlus = KICK_START_PLUS;
+  p.kickMinus = KICK_START_MINUS;
+  p.kp = DEFAULT_KP;
+  p.ki = DEFAULT_KI;
+  p.tauRefS = DEFAULT_TAU_REF_S;
+  p.ka = DEFAULT_KA;
+  p.maxRpm = DEFAULT_MAX_RPM;
+  p.ffPlus.count = sizeof(FF_PLUS) / sizeof(FF_PLUS[0]);
+  memcpy(p.ffPlus.points, FF_PLUS, sizeof(FF_PLUS));
+  p.ffMinus.count = sizeof(FF_MINUS) / sizeof(FF_MINUS[0]);
+  memcpy(p.ffMinus.points, FF_MINUS, sizeof(FF_MINUS));
+  return p;
+}
+
+// Flash namespace "motor1", "motor2"; a blob of the struct, ignored if the version differs
+void loadProfiles() {
+  Preferences prefs;
+  for (size_t i = 0; i < MOTOR_COUNT; i++) {
+    MotorProfile p = defaultProfile();
+    char ns[8];
+    snprintf(ns, sizeof(ns), "motor%u", (unsigned)(i + 1));
+    if (prefs.begin(ns, true)) {
+      MotorProfile stored;
+      if (prefs.getBytes("profile", &stored, sizeof(stored)) == sizeof(stored) &&
+          stored.version == PROFILE_VERSION) {
+        p = stored;
+      }
+      prefs.end();
+    }
+    profiles[i] = p;
+    motorCpr[i] = p.cpr;
+    encoderInvert[i] = p.invert;
+  }
+}
+
+// Writing flash stalls both cores for a moment, so it waits until no motor is running
+void saveProfiles() {
+  portENTER_CRITICAL(&runMux);
+  bool running = runState == RunState::Running;
+  portEXIT_CRITICAL(&runMux);
+  if (running) return;
+  Preferences prefs;
+  for (size_t i = 0; i < MOTOR_COUNT; i++) {
+    if (!profileSavePending[i]) continue;
+    profileSavePending[i] = false;
+    portENTER_CRITICAL(&runMux);
+    MotorProfile p = profiles[i];
+    p.cpr = motorCpr[i];
+    p.invert = encoderInvert[i];
+    portEXIT_CRITICAL(&runMux);
+    char ns[8];
+    snprintf(ns, sizeof(ns), "motor%u", (unsigned)(i + 1));
+    if (prefs.begin(ns, false)) {
+      bool ok = prefs.putBytes("profile", &p, sizeof(p)) == sizeof(p);
+      prefs.end();
+      Serial.printf("SAVED,%u,%d\n", (unsigned)(i + 1), ok ? 1 : 0);
+    }
+  }
+}
+
+void printFfTable(size_t motor, char dir, const FfTable& t) {
+  String line = "FF," + String(motor + 1) + "," + dir + ",";
+  for (size_t k = 0; k < t.count; k++) {
+    if (k) line += ";";
+    line += String(t.points[k].rpm, 1) + ":" + String(t.points[k].duty, 1);
+  }
+  Serial.println(line);
+}
+
+void printProfile(size_t motor) {
+  portENTER_CRITICAL(&runMux);
+  MotorProfile p = profiles[motor];
+  float cpr = motorCpr[motor];
+  bool invert = encoderInvert[motor];
+  portEXIT_CRITICAL(&runMux);
+  Serial.printf("PROFILE,%u,%.2f,%d,%.1f,%.1f,%.5f,%.4f,%.0f,%.5f,%.0f\n", (unsigned)(motor + 1), cpr,
+                invert ? 1 : 0, p.kickPlus, p.kickMinus, p.kp, p.ki, p.tauRefS * 1000.0f, p.ka, p.maxRpm);
+  printFfTable(motor, '+', p.ffPlus);
+  printFfTable(motor, '-', p.ffMinus);
+}
+
+// FF,<motor>,<+|->,<rpm>:<duty>;<rpm>:<duty>;...  rising rpm, 2..FF_MAX_POINTS points
+void parseFfTable(const String& cmd) {
+  int c1 = cmd.indexOf(','), c2 = cmd.indexOf(',', c1 + 1), c3 = cmd.indexOf(',', c2 + 1);
+  if (c1 < 0 || c2 < 0 || c3 < 0) return;
+  unsigned motor = cmd.substring(c1 + 1, c2).toInt();
+  String dir = cmd.substring(c2 + 1, c3);
+  if (motor < 1 || motor > MOTOR_COUNT || (dir != "+" && dir != "-")) return;
+  FfTable t = {};
+  String rest = cmd.substring(c3 + 1);
+  int start = 0;
+  while (start < (int)rest.length() && t.count < FF_MAX_POINTS) {
+    int end = rest.indexOf(';', start);
+    if (end < 0) end = rest.length();
+    String pair = rest.substring(start, end);
+    int colon = pair.indexOf(':');
+    if (colon < 0) return;
+    float rpm = pair.substring(0, colon).toFloat();
+    float duty = pair.substring(colon + 1).toFloat();
+    if (rpm < 0 || duty < 0 || duty > 100) return;
+    if (t.count > 0 && rpm <= t.points[t.count - 1].rpm) return;   // must rise
+    t.points[t.count++] = {rpm, duty};
+    start = end + 1;
+  }
+  if (t.count < 2) return;
+  portENTER_CRITICAL(&runMux);
+  (dir == "+" ? profiles[motor - 1].ffPlus : profiles[motor - 1].ffMinus) = t;
+  portEXIT_CRITICAL(&runMux);
+}
+
 void handleCommand(const String& cmd) {
   if (cmd == "HELLO?") {
     printHello();
@@ -334,7 +484,7 @@ void handleCommand(const String& cmd) {
     float maxRpm, accel;
     if (sscanf(cmd.c_str(), "MOVE,%u,%ld,%f,%f", &motor, &counts, &maxRpm, &accel) == 4 &&
         motor >= 1 && motor <= MOTOR_COUNT && counts != 0 && maxRpm >= MOVE_MIN_RPM &&
-        maxRpm <= 1200 && accel >= 100 && accel <= 20000) {
+        maxRpm <= profiles[motor - 1].maxRpm * 1.1f && accel >= 100 && accel <= 20000) {
       portENTER_CRITICAL(&runMux);
       motorRun.motor = motor - 1;
       motorRun.mode = RunMode::Move;
@@ -368,19 +518,71 @@ void handleCommand(const String& cmd) {
     }
   } else if (cmd.startsWith("GAIN,")) {
     float kp, ki;
-    if (sscanf(cmd.c_str(), "GAIN,%f,%f", &kp, &ki) == 2 && kp >= 0 && ki >= 0) {
+    unsigned motor = 0;
+    int n = sscanf(cmd.c_str(), "GAIN,%f,%f,%u", &kp, &ki, &motor);
+    if (n >= 2 && kp >= 0 && ki >= 0 && motor <= MOTOR_COUNT) {
       portENTER_CRITICAL(&runMux);
-      gainKp = kp;
-      gainKi = ki;
+      for (size_t i = 0; i < MOTOR_COUNT; i++) {
+        if (n == 3 && i != motor - 1) continue;
+        profiles[i].kp = kp;
+        profiles[i].ki = ki;
+      }
       portEXIT_CRITICAL(&runMux);
     }
   } else if (cmd.startsWith("REF,")) {
     float tauMs, ka;
-    if (sscanf(cmd.c_str(), "REF,%f,%f", &tauMs, &ka) == 2 && tauMs >= 5 && ka >= 0) {
+    unsigned motor = 0;
+    int n = sscanf(cmd.c_str(), "REF,%f,%f,%u", &tauMs, &ka, &motor);
+    if (n >= 2 && tauMs >= 5 && ka >= 0 && motor <= MOTOR_COUNT) {
       portENTER_CRITICAL(&runMux);
-      refTauS = tauMs / 1000.0f;
-      gainKa = ka;
+      for (size_t i = 0; i < MOTOR_COUNT; i++) {
+        if (n == 3 && i != motor - 1) continue;
+        profiles[i].tauRefS = tauMs / 1000.0f;
+        profiles[i].ka = ka;
+      }
       portEXIT_CRITICAL(&runMux);
+    }
+  } else if (cmd.startsWith("PROFILE?,")) {
+    unsigned motor;
+    if (sscanf(cmd.c_str(), "PROFILE?,%u", &motor) == 1 && motor >= 1 && motor <= MOTOR_COUNT) {
+      printProfile(motor - 1);
+    }
+  } else if (cmd.startsWith("KICK,")) {
+    unsigned motor;
+    float plus, minus;
+    if (sscanf(cmd.c_str(), "KICK,%u,%f,%f", &motor, &plus, &minus) == 3 && motor >= 1 &&
+        motor <= MOTOR_COUNT && plus > 0 && plus <= 100 && minus > 0 && minus <= 100) {
+      portENTER_CRITICAL(&runMux);
+      profiles[motor - 1].kickPlus = plus;
+      profiles[motor - 1].kickMinus = minus;
+      portEXIT_CRITICAL(&runMux);
+    }
+  } else if (cmd.startsWith("MAXRPM,")) {
+    unsigned motor;
+    float rpm;
+    if (sscanf(cmd.c_str(), "MAXRPM,%u,%f", &motor, &rpm) == 2 && motor >= 1 && motor <= MOTOR_COUNT &&
+        rpm >= 50 && rpm <= 20000) {
+      portENTER_CRITICAL(&runMux);
+      profiles[motor - 1].maxRpm = rpm;
+      portEXIT_CRITICAL(&runMux);
+    }
+  } else if (cmd.startsWith("FF,")) {
+    parseFfTable(cmd);
+  } else if (cmd.startsWith("SAVE,")) {
+    unsigned motor;
+    if (sscanf(cmd.c_str(), "SAVE,%u", &motor) == 1 && motor >= 1 && motor <= MOTOR_COUNT) {
+      profileSavePending[motor - 1] = true;   // written once the motors are idle
+    }
+  } else if (cmd.startsWith("DEFAULTS,")) {
+    unsigned motor;
+    if (sscanf(cmd.c_str(), "DEFAULTS,%u", &motor) == 1 && motor >= 1 && motor <= MOTOR_COUNT) {
+      MotorProfile p = defaultProfile();
+      portENTER_CRITICAL(&runMux);
+      profiles[motor - 1] = p;
+      motorCpr[motor - 1] = p.cpr;
+      encoderInvert[motor - 1] = p.invert;
+      portEXIT_CRITICAL(&runMux);
+      printProfile(motor - 1);
     }
   } else if (cmd.startsWith("CPR,")) {
     unsigned motor;
@@ -435,7 +637,7 @@ void readCommands() {
       buffer.trim();
       handleCommand(buffer);
       buffer = "";
-    } else if (buffer.length() < 64) {
+    } else if (buffer.length() < 400) {   // FF tables are the longest lines
       buffer += c;
     }
   }
@@ -653,6 +855,7 @@ void telemetryTask(void*) {
     samplePower();
     sendPower();
     sendBattery();
+    saveProfiles();
     sendMotorRun();
     sendLog();
     vTaskDelay(pdMS_TO_TICKS(TELEMETRY_PERIOD_MS));
@@ -689,23 +892,37 @@ void applyDuty(size_t motor, float duty, bool enabled) {
   digitalWrite(p.ena, enabled ? HIGH : LOW);
 }
 
+struct Gains {
+  float kp;
+  float ki;
+  float ka;
+  float tauRefS;
+  float supplyV;   // volts -> duty
+  float kickPlus;
+  float kickMinus;
+  FfTable ffPlus;
+  FfTable ffMinus;
+};
+
 // Duty (%) that holds `rpm` in steady state, by linear interpolation in the measured
 // curve for that direction; 0 RPM gives 0 (stopped), beyond the last point 100 %
-template <size_t N>
-float interpolateFf(const FfPoint (&table)[N], float rpm) {
-  if (rpm >= table[N - 1].rpm) return table[N - 1].duty;
-  for (size_t i = 1; i < N; i++) {
-    if (rpm <= table[i].rpm) {
-      float f = (rpm - table[i - 1].rpm) / (table[i].rpm - table[i - 1].rpm);
-      return table[i - 1].duty + f * (table[i].duty - table[i - 1].duty);
+float interpolateFf(const FfTable& table, float rpm) {
+  size_t n = table.count;
+  if (n == 0) return 0;
+  const FfPoint* p = table.points;
+  if (rpm >= p[n - 1].rpm) return p[n - 1].duty;
+  for (size_t i = 1; i < n; i++) {
+    if (rpm <= p[i].rpm) {
+      float f = (rpm - p[i - 1].rpm) / (p[i].rpm - p[i - 1].rpm);
+      return p[i - 1].duty + f * (p[i].duty - p[i - 1].duty);
     }
   }
-  return table[N - 1].duty;
+  return p[n - 1].duty;
 }
 
-float feedforwardDuty(float rpm) {
-  if (rpm > 0) return interpolateFf(FF_PLUS, rpm);
-  if (rpm < 0) return -interpolateFf(FF_MINUS, -rpm);
+float feedforwardDuty(const Gains& g, float rpm) {
+  if (rpm > 0) return interpolateFf(g.ffPlus, rpm);
+  if (rpm < 0) return -interpolateFf(g.ffMinus, -rpm);
   return 0;
 }
 
@@ -720,13 +937,6 @@ struct PiState {
   int lastMotor = -1;
 };
 
-struct Gains {
-  float kp;
-  float ki;
-  float ka;
-  float tauRefS;
-  float supplyV;   // volts -> duty
-};
 
 // Speed modes: returns the duty (%) and fills the reference and FF / PI split for reporting
 // directRef: the move profile supplies the reference and its rate, skipping the filter
@@ -763,7 +973,7 @@ float speedControl(PiState& pi, const MotorRun& run, float speedRpm, const Gains
   else if (pi.stuck && along >= freeLimit) pi.stuck = false;
   else if (!pi.stuck && pi.stillMs >= STILL_MS) pi.stuck = true;
   if (pi.stuck) {
-    float start = run.targetRpm > 0 ? KICK_START_PLUS : KICK_START_MINUS;
+    float start = run.targetRpm > 0 ? g.kickPlus : g.kickMinus;
     pi.kickDuty = pi.kickDuty == 0 ? start : fminf(pi.kickDuty + KICK_RATE * dt, KICK_MAX);
     pi.refRpm = speedRpm;
     pi.integralV = 0;
@@ -782,7 +992,7 @@ float speedControl(PiState& pi, const MotorRun& run, float speedRpm, const Gains
     pi.refRpm += refRate * dt;
   }
 
-  float ffV = feedforwardDuty(pi.refRpm) / 100.0f * FF_TABLE_V + g.ka * refRate;
+  float ffV = feedforwardDuty(g, pi.refRpm) / 100.0f * FF_TABLE_V + g.ka * refRate;
   ffV = constrain(ffV, -g.supplyV, g.supplyV);
   ffDuty = ffV / g.supplyV * 100.0f;
   if (run.mode != RunMode::FeedforwardPi) return ffDuty;
@@ -895,7 +1105,9 @@ void runMotors() {
   MotorRun run = motorRun;
   bool running = runState == RunState::Running;
   bool supplyFresh = supplyMeasuredMs != 0 && now - supplyMeasuredMs < SUPPLY_STALE_MS;
-  Gains gains = {gainKp, gainKi, gainKa, refTauS, supplyFresh ? measuredSupplyV : SUPPLY_V};
+  const MotorProfile& prof = profiles[run.motor < (int)MOTOR_COUNT ? run.motor : 0];
+  Gains gains = {prof.kp, prof.ki, prof.ka, prof.tauRefS, supplyFresh ? measuredSupplyV : SUPPLY_V,
+                 prof.kickPlus, prof.kickMinus, prof.ffPlus, prof.ffMinus};
   portEXIT_CRITICAL(&runMux);
 
   // Measure first, then decide this tick's duty
@@ -1006,6 +1218,7 @@ void readEncoders(uint32_t now, float (&speedRpm)[MOTOR_COUNT]) {
 void setup() {
   Serial.begin(SERIAL_BAUD);
   logQueue = xQueueCreate(LOG_QUEUE_LENGTH, sizeof(LogEntry));
+  loadProfiles();
   setupMotors();
   // setup() runs inside the loop task, so this is the task loop() runs in
   mainLoopTask = xTaskGetCurrentTaskHandle();

@@ -137,6 +137,12 @@ braking and the jump when the brake is released. With the calm gains, about 2.5 
 the integral while braked and threw the motor to ~550 RPM (target 300) on release. The cost is
 that the ±8 RPM speed ripple shows up as about ±0.3 V on the output.
 
+**Motor profiles (firmware 0.21.0).** Everything above that belongs to one motor (CPR,
+direction, start thresholds, gains, top speed and both feedforward curves) is a per-motor
+profile kept in the ESP32's flash. The built-in defaults are motor 1's numbers. The dashboard
+reads the profiles on connect and saves changes back; `PROFILE?`, `KICK`, `MAXRPM`, `FF`,
+`SAVE` and `DEFAULTS` do the same over serial (see the protocol comment in `src/main.cpp`).
+
 ## Validation
 
 Data: [`data/motor1_speed_control_raw.csv`](data/motor1_speed_control_raw.csv), from
