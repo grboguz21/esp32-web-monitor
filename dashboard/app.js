@@ -157,8 +157,8 @@ const currentChart = new LiveChart(document.getElementById('currentChart'), {
 const voltageChart = new LiveChart(document.getElementById('voltageChart'), {
   series: motorSeries,
   legend: document.getElementById('voltageLegend'),
-  format: (v) => `${v.toFixed(2)} V`,
-  tickFormat: (v) => `${v.toFixed(1)} V`,
+  format: (v) => `${num(v, 2)} V`,
+  tickFormat: (v) => `${num(v, 1)} V`,
   minSpan: 0.5,
   labels: chartLabels,
 });
@@ -212,7 +212,7 @@ const mvChart = new LiveChart(document.getElementById('mvChart'), {
     { key: 'target', label: () => t('mvTargetNow'), short: () => t('mvTargetNow'), color: '--series-2' },
   ],
   legend: document.getElementById('mvLegend'),
-  format: (v) => (els.mvUnit.value === 'm' ? `${v.toFixed(2)} m` : `${v.toFixed(2)}`),
+  format: (v) => (els.mvUnit.value === 'm' ? `${num(v, 2)} m` : num(v, 2)),
   minSpan: 0.5,
   windowMs: 20000,
   labels: chartLabels,
@@ -246,6 +246,9 @@ const encChart = new LiveChart(document.getElementById('encChart'), {
   labels: chartLabels,
 });
 
+// Numbers in the page's language: 1,25 in Turkish, 1.25 in English
+const num = (v, digits) => v.toLocaleString(I18N.lang === 'tr' ? 'tr-TR' : 'en-US',
+  { minimumFractionDigits: digits, maximumFractionDigits: digits });
 const signedPercent = (d) => `${d > 0 ? '+' : d < 0 ? '−' : ''}${Math.abs(d).toFixed(0)} %`;
 
 const dutyChart = new LiveChart(document.getElementById('dutyChart'), {
@@ -578,8 +581,8 @@ function render() {
 }
 
 function formatBytes(n) {
-  if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
-  if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n >= 1024 * 1024) return `${num(n / 1024 / 1024, 1)} MB`;
+  if (n >= 1024) return `${num(n / 1024, 1)} KB`;
   return `${n} B`;
 }
 
@@ -652,12 +655,12 @@ function renderHealth(state) {
 }
 
 function formatCurrent(ma) {
-  if (Math.abs(ma) >= 1000) return `${(ma / 1000).toFixed(2)} A`;
+  if (Math.abs(ma) >= 1000) return `${num(ma / 1000, 2)} A`;
   return `${Math.round(ma)} mA`;
 }
 
 function formatPower(mw) {
-  if (Math.abs(mw) >= 1000) return `${(mw / 1000).toFixed(2)} W`;
+  if (Math.abs(mw) >= 1000) return `${num(mw / 1000, 2)} W`;
   return `${Math.round(mw)} mW`;
 }
 
@@ -692,8 +695,8 @@ function renderPower(state) {
 
       const values = m.power
         ? {
-            voltage: `${m.power.voltage.toFixed(2)} V`,
-            voltageSub: t('lowestV', { v: `${m.minVoltage.toFixed(2)} V` }),
+            voltage: `${num(m.power.voltage, 2)} V`,
+            voltageSub: t('lowestV', { v: `${num(m.minVoltage, 2)} V` }),
             current: formatCurrent(m.power.currentMa),
             currentSub: t('peakI', { i: formatCurrent(m.maxCurrentMa) }),
             power: formatPower(m.power.powerMw),
@@ -747,8 +750,8 @@ const mvFromCounts = (counts) => {
   return els.mvUnit.value === 'm' ? turns * Math.PI * mvWheelM() : turns;
 };
 const mvFormat = (counts) => (els.mvUnit.value === 'm'
-  ? `${mvFromCounts(counts).toFixed(3)} m`
-  : `${mvFromCounts(counts).toFixed(2)} ${t('mvTurnsShort')}`);
+  ? `${num(mvFromCounts(counts), 3)} m`
+  : `${num(mvFromCounts(counts), 2)} ${t('mvTurnsShort')}`);
 const mvDetail = (counts) => {
   const turns = counts / mvCpr();
   const mm = turns * Math.PI * mvWheelM() * 1000;
@@ -780,12 +783,12 @@ function renderMoveEstimate() {
     const reached = e.peakRpm >= e.maxRpm - 0.5;
     const fmt = (key, vars) => t(key, vars).replace(/(\d[\d.,]*)/g, '<b>$1</b>');
     parts.push(reached
-      ? fmt('mvEstReach', { rpm: Math.round(e.peakRpm), s: e.reachS.toFixed(2) })
-      : fmt('mvEstPeak', { max: e.maxRpm, rpm: Math.round(e.peakRpm), s: e.reachS.toFixed(2) }));
-    parts.push(fmt('mvEstTotal', { s: e.totalS.toFixed(2) }));
-    parts.push(fmt('mvEstDistance', { turns: e.turns.toFixed(2) }));
+      ? fmt('mvEstReach', { rpm: Math.round(e.peakRpm), s: num(e.reachS, 2) })
+      : fmt('mvEstPeak', { max: e.maxRpm, rpm: Math.round(e.peakRpm), s: num(e.reachS, 2) }));
+    parts.push(fmt('mvEstTotal', { s: num(e.totalS, 2) }));
+    parts.push(fmt('mvEstDistance', { turns: num(e.turns, 2) }));
   }
-  if (mvTookMs !== null) parts.push(t('mvEstLast', { s: `<b>${(mvTookMs / 1000).toFixed(2)}</b>` }));
+  if (mvTookMs !== null) parts.push(t('mvEstLast', { s: `<b>${num(mvTookMs / 1000, 2)}</b>` }));
   els.mvEstimate.innerHTML = parts.map((p) => `<span>${p}</span>`).join('');
 }
 
@@ -826,7 +829,7 @@ function renderSpd(state) {
   els.spdSpeedNow.textContent = supported ? `${Math.round(spd.speed)} RPM` : '—';
   els.spdErrorNow.textContent = show ? `${Math.round(spd.target - spd.speed)} RPM` : '—';
   els.spdDutyNow.textContent = show ? signedPercent(spd.ff + spd.pi) : '—';
-  els.spdDutySplit.textContent = show ? `FF ${spd.ff.toFixed(1)} % · PI ${spd.pi >= 0 ? '+' : ''}${spd.pi.toFixed(1)} %` : '';
+  els.spdDutySplit.textContent = show ? `FF ${num(spd.ff, 1)} % · PI ${spd.pi >= 0 ? '+' : ''}${num(spd.pi, 1)} %` : '';
 }
 
 function renderEnc(state) {
@@ -844,7 +847,7 @@ function renderEnc(state) {
     const cpr = encSettings.cpr[m] || 0;
     const has = live && d.count !== null;
     field('count').textContent = has ? d.count.toLocaleString() : '—';
-    field('turns').textContent = has && cpr ? t('encTurns', { n: (d.count / cpr).toFixed(2) }) : '';
+    field('turns').textContent = has && cpr ? t('encTurns', { n: num(d.count / cpr, 2) }) : '';
     field('speed').textContent = !has ? '—'
       : cpr ? `${Math.round((d.cps * 60) / cpr)} RPM` : `${Math.round(d.cps)} ${t('cpsUnit')}`;
     field('invert').checked = Boolean(encSettings.invert[m]);

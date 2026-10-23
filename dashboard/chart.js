@@ -132,20 +132,24 @@ class LiveChart {
       ctx.fillText(this.labels.axis(s), px, h - 6);
     }
 
-    // Background grid: a vertical line every 2.5 s and a horizontal one at every quarter
-    // tick step (eighths of the plot while there is no data)
+    // Background grid, spaced by pixels so long and short windows look alike: vertical
+    // lines on round seconds about 60 px apart, horizontal ones at quarter, half or whole
+    // tick steps, whichever keeps them at least 18 px apart
     ctx.save();
     ctx.strokeStyle = token('--border');
     ctx.globalAlpha = 0.8;
     ctx.lineWidth = 1;
     ctx.beginPath();
-    const gridS = seconds % 2.5 === 0 && seconds / 2.5 <= 24 ? 2.5 : seconds / 12;
+    const gridS = [0.5, 1, 2, 2.5, 5, 10, 15, 30, 60].find((g) => (g / seconds) * pw >= 60) ?? seconds;
     for (let s = gridS; s < seconds; s += gridS) {
       const px = Math.round(pad.left + (1 - s / seconds) * pw) + 0.5;
       ctx.moveTo(px, pad.top);
       ctx.lineTo(px, pad.top + ph);
     }
-    const rows = active.length ? Math.round(((hi - lo) / step) * 4) : 8;
+    const steps = active.length ? Math.round((hi - lo) / step) : 4;
+    const stepPx = ph / steps;
+    const sub = [4, 2, 1].find((n) => stepPx / n >= 18) ?? 1;
+    const rows = steps * sub;
     for (let i = 0; i <= rows; i++) {
       const py = Math.round(pad.top + (i / rows) * ph) + 0.5;
       ctx.moveTo(pad.left, py);
