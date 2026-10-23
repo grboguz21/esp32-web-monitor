@@ -2,65 +2,73 @@
 
 > **Work in progress.** This branch builds on my [ESP32 Web Monitor](https://github.com/grboguz21/esp32-web-monitor/tree/main) draft.
 
-I'm turning the monitor into a controller for two 12 V encoder gear motors, all from the browser over USB.
-Motor control itself isn't in yet. Right now the dashboard shows how much power each motor pulls, which I wanted in place before the motors start moving.
+Two 12 V encoder gear motors, driven and tuned from the browser over USB. No app to install: the dashboard is a single web page that talks to the ESP32 through Web Serial.
+
+![PID tab](docs/pid.png)
+
+## Tabs
+
+**Dashboard.** Is the board alive? Connection status, RAM, loop time and stack use, plus the serial log.
+
+**Power.** Voltage, current and power for each motor from an INA219, with live charts and the lowest voltage / highest current since the last reset.
 
 ![Power tab](docs/power.png)
 
-What it does right now:
+**Encoder.** Live count and speed for each motor. Find the counts per revolution by turning the shaft by hand, and flip the direction if it counts backwards.
 
-- everything the monitor does: connection status, board health, chip info, pinout
-- reads one INA219 per motor and shows voltage, current and power
-- live charts of both motors over the last 60 seconds, hover to see exact values
-- remembers the lowest voltage and highest current, so a stall or a weak supply doesn't slip by
-- a **Demo data** button, so you can see the charts without any sensors wired up
-- the dashboard talking runs on core 0, which keeps core 1 free for motor control later
+**Motor.** Give each motor a duty and watch PWM and RPM side by side. Handy for checking wiring and direction.
 
-![Dashboard](docs/dashboard.png)
+![Motor tab](docs/motor.png)
 
-Measurements and controller tuning for motor 1 are in [docs/motor-characterization.md](docs/motor-characterization.md).
+**PID.** Speed control with feedforward + PI. Change the target or the gains while it runs and see target, reference and measured speed on one chart. The **Distance test** below it turns the wheel a set number of turns or meters and brakes on target.
+
+![Distance test](docs/distance.png)
+
+**Board pinout.** The DevKit's pins with what each one can do. Click a pin for details.
+
+![Board pinout](docs/board-pinout.png)
+
+The Power and Motor shots use the built-in demo data. The PID and Distance shots are a recorded run of motor 1.
 
 ## Hardware
 
 - DOIT ESP32 DevKit V1
-- 2× 12 V 25 mm encoder gear motors
-- 2× INA219 current sensor modules (bridge the A0 pads on the second one so it moves to address 0x41)
+- 2× GA25-370 12 V 1350 RPM gear motors with Hall encoders
+- 2× L298N motor drivers, one per motor
+- 2× INA219 current sensors (optional; bridge A0 on the second one for address 0x41)
 - 12 V 2 A power supply
-- motor driver: still picking one
 
 ## Wiring
 
-Both INA219 boards share the same four wires to the ESP32:
+| | Motor 1 | Motor 2 |
+|---|---|---|
+| L298N ENA | D25 | D18 |
+| L298N IN1 | D26 | D19 |
+| L298N IN2 | D27 | D23 |
+| Encoder A (yellow) | D34 | D16 |
+| Encoder B (green) | D35 | D17 |
+| Encoder VCC (blue) / GND (black) | 3V3 / GND | 3V3 / GND |
 
-| INA219 | ESP32 |
-|---|---|
-| Vcc | 3V3 |
-| Gnd | GND |
-| Sda | D21 |
-| Scl | D22 |
+Pull the ENA jumper off the L298N. Both INA219s share 3V3, GND, SDA → D21 and SCL → D22. Tie the 12 V ground to an ESP32 GND pin.
 
-Each sensor sits in its own motor's supply line: `12 V (+) → Vin+ → Vin− → motor (+)`.
-Tie the 12 V ground to an ESP32 GND pin, and never put 12 V on an ESP32 pin.
-
-![Board pinout](docs/board-pinout.png)
+The dashboard draws all of this too: **Show motor wiring** under Motor Control, **Show wiring** on the Power tab.
 
 ## Trying it out
 
 1. Open this folder in VS Code with the PlatformIO extension and check out the `motor-controller` branch.
-2. Plug the ESP32 in with a USB cable and click **Upload** (the → arrow in the bottom bar).
-3. Close the PlatformIO serial monitor if it's open.
-4. Open `dashboard/index.html` in Chrome. If it opens in another browser, right-click the file and choose **Open with → Google Chrome**.
-5. Click **Add port…**, pick your board and click **Connect**.
-6. Go to the **Power** tab. No sensors yet? Hit **Demo data**.
+2. Plug the ESP32 in and click **Upload** (the → arrow in the bottom bar).
+3. Open `dashboard/index.html` in Chrome or Edge.
+4. Click **Add port…**, pick your board, then **Connect**.
 
-It only works in Chrome or Edge. Before uploading new code, click **Disconnect** so the port is free.
+No hardware yet? Hit **Demo data** on the Power tab. Before uploading new code, click **Disconnect** so the port is free.
+
+Measurements and controller tuning for motor 1 are in [docs/motor-characterization.md](docs/motor-characterization.md).
 
 ## Next up
 
-- pick a motor driver and drive both motors with PWM
-- read the encoders and show RPM
-- PID speed control with sliders in the dashboard
-- stop the motors when the dashboard goes quiet or the current gets too high
+- characterize motor 2 the same way
+- tests on the ground with the robot's weight
+- drive both motors together (straight line, turns)
 
 ## License
 

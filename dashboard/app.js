@@ -1066,7 +1066,7 @@ function zeroEncoder(m) {
 // the simulated run, reported as the firmware's ENC line
 function startEncSim() {
   stopEncSim();
-  const CPR = 700;
+  const CPR = DEFAULT_CPR;   // same as the page uses for RPM, so the demo tops out near 1350 RPM
   const sim = { count: { 1: 0, 2: 0 }, speed: { 1: 0, 2: 0 }, last: performance.now() };
   sim.timer = setInterval(() => {
     const now = performance.now();
