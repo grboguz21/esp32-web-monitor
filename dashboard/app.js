@@ -675,7 +675,7 @@ function renderHealth(state) {
     return;
   }
 
-  // Used RAM: the bar fills and shifts from --heap-low to --heap-high as it fills
+  // Used RAM
   const total = info?.heap;
   const usedRatio = total ? Math.min(1, Math.max(0, 1 - health.freeHeap / total)) : null;
   els.hFree.textContent = total ? formatBytes(total - health.freeHeap) : '—';
