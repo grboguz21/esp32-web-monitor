@@ -739,10 +739,11 @@ function renderBattery() {
     return;
   }
   els.hBatt.textContent = `${num(b.volts, 2)} V`;
-  if (!b.measured) {
+  if (!b.measured) {   // nothing measured: a full grey bar, so it does not read as a charge level
     els.hBattSub.textContent = t('battAssumed');
     els.hBatt.classList.remove('warn');
-    setMeter(els.hBattBar, null);
+    setMeter(els.hBattBar, 1);
+    els.hBattBar.style.background = 'var(--offline)';
     return;
   }
   const charge = Math.min(1, Math.max(0, (b.volts - BATT_EMPTY_V) / (BATT_FULL_V - BATT_EMPTY_V)));
