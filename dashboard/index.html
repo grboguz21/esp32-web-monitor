@@ -392,11 +392,22 @@
             <div class="tile"><div class="tile-label" data-i18n="mvRemaining">Remaining</div><div class="tile-value" id="mvRemaining">—</div><div class="tile-sub" id="mvProfile">—</div></div>
             <div class="tile"><div class="tile-label" data-i18n="mvFinalError">Final error</div><div class="tile-value" id="mvFinalError">—</div><div class="tile-sub" id="mvFinalSub">—</div></div>
           </div>
-          <div class="card-head">
-            <h3 class="chart-title" id="mvChartTitle"></h3>
-            <div class="chart-legend" id="mvLegend"></div>
+          <div class="mv-charts">
+            <div class="mv-chart-col">
+              <div class="card-head">
+                <h3 class="chart-title" id="mvChartTitle"></h3>
+                <div class="chart-legend" id="mvLegend"></div>
+              </div>
+              <div class="chart" id="mvChart"></div>
+            </div>
+            <div class="mv-chart-col">
+              <div class="card-head">
+                <h3 class="chart-title" data-i18n="mvSpeedChart">Speed: profile and measured (RPM)</h3>
+                <div class="chart-legend" id="mvSpeedLegend"></div>
+              </div>
+              <div class="chart" id="mvSpeedChart"></div>
+            </div>
           </div>
-          <div class="chart" id="mvChart"></div>
         </section>
 
         <section class="card enc-card" id="encCard">

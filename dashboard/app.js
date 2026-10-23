@@ -250,6 +250,17 @@ const mvChart = new LiveChart(document.getElementById('mvChart'), {
   windowMs: 20000,
   labels: chartLabels,
 });
+const mvSpeedChart = new LiveChart(document.getElementById('mvSpeedChart'), {
+  series: [
+    { key: 'speed', label: () => t('mvPosition'), short: () => t('mvPosition'), color: '--series-1' },
+    { key: 'profile', label: () => t('mvProfileSpeed'), short: () => t('mvProfileSpeed'), color: '--series-2' },
+  ],
+  legend: document.getElementById('mvSpeedLegend'),
+  format: (v) => `${Math.round(v)} RPM`,
+  minSpan: 50,
+  windowMs: 20000,
+  labels: chartLabels,
+});
 
 function saveEnc() {
   try { localStorage.setItem(ENC_STORAGE_KEY, JSON.stringify(encSettings)); } catch { /* storage unavailable */ }
@@ -425,6 +436,7 @@ async function closePort() {
   spdChart.clear();
   mv = null;
   mvChart.clear();
+  mvSpeedChart.clear();
   uptimeMs = null;
   lastBeatAt = 0;
   log(t('log.closed'));
@@ -533,6 +545,8 @@ function handleLine(line) {
     if (phase !== 0 && mvMotor) {
       mvChart.push('pos', mvFromCounts(pos));
       mvChart.push('target', mvFromCounts(target));
+      mvSpeedChart.push('speed', spd ? spd.speed : 0);
+      mvSpeedChart.push('profile', Math.sign(target) * profileRpm);
     }
     return;
   }
@@ -1054,6 +1068,7 @@ function startMove() {
   if (counts === 0) return;
   sendGains();
   mvChart.clear();
+  mvSpeedChart.clear();
   if (port) send(`MOVE,${motor},${counts},${maxRpm},${accel}`);
   render();
 }
@@ -1381,6 +1396,7 @@ I18N.onChange(() => {
   spdChart.renderLegend();
   renderSpdMotors();
   mvChart.renderLegend();
+  mvSpeedChart.renderLegend();
   renderMoveMotors();
   renderTestPins();
   render();

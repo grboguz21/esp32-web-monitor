@@ -879,3 +879,5 @@ h2[data-help] {
 }
 .mv-tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 12px; }
 @media (max-width: 900px) { .mv-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.mv-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+@media (max-width: 900px) { .mv-charts { grid-template-columns: 1fr; } }
