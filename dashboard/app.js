@@ -682,6 +682,12 @@ function meterColor(ratio) {
   return `color-mix(in oklab, var(--meter-bad) ${k}%, var(--meter-mid))`;
 }
 
+// Bar for an amount left: full and green, emptying through yellow to red
+function setRemaining(bar, ratio) {
+  setMeter(bar, ratio);
+  if (ratio !== null) bar.style.background = meterColor(1 - ratio);
+}
+
 function setMeter(bar, ratio) {
   bar.style.width = ratio !== null ? `${(ratio * 100).toFixed(1)}%` : '0';
   bar.style.background = ratio !== null ? meterColor(ratio) : '';
@@ -698,27 +704,27 @@ function renderHealth(state) {
     return;
   }
 
-  // Used RAM
+  // Every tile shows what is left; the bar empties and turns yellow, then red, as it runs out
   const total = info?.heap;
-  const usedRatio = total ? Math.min(1, Math.max(0, 1 - health.freeHeap / total)) : null;
-  els.hFree.textContent = total ? formatBytes(total - health.freeHeap) : '—';
-  els.hFree.classList.toggle('warn', usedRatio !== null && usedRatio > 1 - HEAP_WARN_RATIO);
-  setMeter(els.hFreeBar, usedRatio);
+  const freeRatio = total ? Math.min(1, Math.max(0, health.freeHeap / total)) : null;
+  els.hFree.textContent = formatBytes(health.freeHeap);
+  els.hFree.classList.toggle('warn', freeRatio !== null && freeRatio < HEAP_WARN_RATIO);
+  setRemaining(els.hFreeBar, freeRatio);
   els.hFreeSub.textContent = total
-    ? t('heapOf', { pct: Math.round(usedRatio * 100), total: formatBytes(total) })
+    ? t('heapOf', { pct: Math.round(freeRatio * 100), total: formatBytes(total) })
     : t('totalUnknown');
 
-  els.hLoopAvg.textContent = `${health.loopAvgUs} µs`;
-  const loopRatio = Math.min(1, health.loopMaxUs / LOOP_BUDGET_US);
-  els.hLoopMax.textContent = t('loopBudget', { us: health.loopMaxUs, pct: Math.round(loopRatio * 100) });
-  setMeter(els.hLoopBar, loopRatio);
+  // Loop: time left in the 5 ms control tick after the slowest round
+  const loopFreeUs = Math.max(0, LOOP_BUDGET_US - health.loopMaxUs);
+  els.hLoopAvg.textContent = `${num(loopFreeUs / 1000, 2)} ms`;
+  setRemaining(els.hLoopBar, loopFreeUs / LOOP_BUDGET_US);
+  els.hLoopMax.textContent = t('loopBudget', { us: health.loopMaxUs, avg: num(Number(health.loopAvgUs), 1) });
 
-  const stackUsed = Math.max(0, LOOP_STACK_BYTES - health.stackFree);
-  const stackRatio = Math.min(1, stackUsed / LOOP_STACK_BYTES);
-  els.hStack.textContent = formatBytes(stackUsed);
+  const stackRatio = Math.min(1, Math.max(0, health.stackFree / LOOP_STACK_BYTES));
+  els.hStack.textContent = formatBytes(health.stackFree);
   els.hStack.classList.toggle('warn', health.stackFree < STACK_WARN_BYTES);
   els.hStackSub.textContent = t('heapOf', { pct: Math.round(stackRatio * 100), total: formatBytes(LOOP_STACK_BYTES) });
-  setMeter(els.hStackBar, stackRatio);
+  setRemaining(els.hStackBar, stackRatio);
   renderBattery();
 }
 
@@ -740,8 +746,7 @@ function renderBattery() {
     return;
   }
   const charge = Math.min(1, Math.max(0, (b.volts - BATT_EMPTY_V) / (BATT_FULL_V - BATT_EMPTY_V)));
-  setMeter(els.hBattBar, charge);
-  els.hBattBar.style.background = meterColor(1 - charge);
+  setRemaining(els.hBattBar, charge);
   els.hBatt.classList.toggle('warn', b.volts < BATT_LOW_V);
   els.hBattSub.textContent = t(b.volts < BATT_EMPTY_V ? 'battCritical' : b.volts < BATT_LOW_V ? 'battLow' : 'battComp');
 }
