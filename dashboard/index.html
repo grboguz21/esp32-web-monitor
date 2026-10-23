@@ -64,7 +64,9 @@
         <nav class="tabs" role="tablist">
           <button class="tab" role="tab" data-tab="dashboard" aria-selected="true" data-i18n="tabDashboard">Dashboard</button>
           <button class="tab" role="tab" data-tab="power" aria-selected="false" data-i18n="tabPower">Power</button>
+          <button class="tab" role="tab" data-tab="encoder" aria-selected="false" data-i18n="tabEncoder">Encoder</button>
           <button class="tab" role="tab" data-tab="motor" aria-selected="false" data-i18n="tabMotor">Motor test</button>
+          <button class="tab" role="tab" data-tab="pid" aria-selected="false" data-i18n="tabPid">PID</button>
           <button class="tab" role="tab" data-tab="board" aria-selected="false" data-i18n="tabBoard">Board pinout</button>
         </nav>
         <div class="toolbar">
@@ -276,6 +278,85 @@
 
       </div>
 
+      <div class="tab-panel" data-panel="encoder" hidden>
+        <section class="card enc-card" id="encCard">
+          <div class="card-head">
+            <h2 data-i18n="encTitle">Encoder</h2>
+            <span class="badge" id="encBadge"></span>
+          </div>
+          <div class="motor-row" data-emotor="1">
+            <div class="motor-head">
+              <i class="motor-swatch" style="background: var(--series-1)"></i>
+              <span class="motor-name" data-i18n="motor1">Motor 1</span>
+            </div>
+            <div class="tiles">
+              <div class="tile">
+                <div class="tile-label" data-i18n="encCount">Count</div>
+                <div class="tile-value" data-efield="count">—</div>
+                <div class="tile-sub" data-efield="turns">—</div>
+              </div>
+              <div class="tile">
+                <div class="tile-label" data-i18n="encSpeed">Speed</div>
+                <div class="tile-value" data-efield="speed">—</div>
+              </div>
+              <div class="tile">
+                <div class="tile-label" data-i18n="encDir">Direction check</div>
+                <div class="tile-value enc-dir" data-efield="dir">—</div>
+                <label class="enc-invert"><input type="checkbox" data-efield="invert"> <span data-i18n="encInvert">Flip direction</span></label>
+              </div>
+            </div>
+            <div class="enc-actions">
+              <button class="btn btn-secondary" data-efield="zero" data-i18n="encZero">Zero</button>
+              <label class="ks-supply enc-turns"><span data-i18n="encTurnsInput">Turns</span>
+                <input type="number" min="1" step="1" value="10" data-efield="turnsInput">
+              </label>
+              <button class="btn btn-secondary" data-efield="oneTurn" data-i18n="encTurned">I turned it</button>
+              <label class="ks-supply"><span data-i18n="encCpr">Counts per rev</span>
+                <input type="number" min="0" step="0.1" data-efield="cpr">
+              </label>
+            </div>
+          </div>
+          <div class="motor-row" data-emotor="2">
+            <div class="motor-head">
+              <i class="motor-swatch" style="background: var(--series-2)"></i>
+              <span class="motor-name" data-i18n="motor2">Motor 2</span>
+            </div>
+            <div class="tiles">
+              <div class="tile">
+                <div class="tile-label" data-i18n="encCount">Count</div>
+                <div class="tile-value" data-efield="count">—</div>
+                <div class="tile-sub" data-efield="turns">—</div>
+              </div>
+              <div class="tile">
+                <div class="tile-label" data-i18n="encSpeed">Speed</div>
+                <div class="tile-value" data-efield="speed">—</div>
+              </div>
+              <div class="tile">
+                <div class="tile-label" data-i18n="encDir">Direction check</div>
+                <div class="tile-value enc-dir" data-efield="dir">—</div>
+                <label class="enc-invert"><input type="checkbox" data-efield="invert"> <span data-i18n="encInvert">Flip direction</span></label>
+              </div>
+            </div>
+            <div class="enc-actions">
+              <button class="btn btn-secondary" data-efield="zero" data-i18n="encZero">Zero</button>
+              <label class="ks-supply enc-turns"><span data-i18n="encTurnsInput">Turns</span>
+                <input type="number" min="1" step="1" value="10" data-efield="turnsInput">
+              </label>
+              <button class="btn btn-secondary" data-efield="oneTurn" data-i18n="encTurned">I turned it</button>
+              <label class="ks-supply"><span data-i18n="encCpr">Counts per rev</span>
+                <input type="number" min="0" step="0.1" data-efield="cpr">
+              </label>
+            </div>
+          </div>
+          <p class="test-warning" data-i18n="encHint">To find counts per rev: press Zero, turn the output shaft exactly one turn by hand, then press "I turned it one rev".</p>
+          <div class="card-head">
+            <h3 class="chart-title" id="encChartTitle"></h3>
+            <div class="chart-legend" id="encLegend"></div>
+          </div>
+          <div class="chart" id="encChart"></div>
+        </section>
+      </div>
+
       <div class="tab-panel" data-panel="motor" hidden>
         <section class="card motor-test" id="testCard">
           <div class="card-head">
@@ -328,7 +409,9 @@
             <div class="wiring" hidden></div>
           </div>
         </section>
+      </div>
 
+      <div class="tab-panel" data-panel="pid" hidden>
         <section class="card spd-card" id="spdCard">
           <div class="card-head">
             <h2 data-help="spd"><span data-i18n="spdTitle">PID Tuning</span></h2>
@@ -434,84 +517,6 @@
             </div>
           </div>
         </section>
-
-        <section class="card enc-card" id="encCard">
-          <div class="card-head">
-            <h2 data-i18n="encTitle">Encoder</h2>
-            <span class="badge" id="encBadge"></span>
-          </div>
-          <div class="motor-row" data-emotor="1">
-            <div class="motor-head">
-              <i class="motor-swatch" style="background: var(--series-1)"></i>
-              <span class="motor-name" data-i18n="motor1">Motor 1</span>
-            </div>
-            <div class="tiles">
-              <div class="tile">
-                <div class="tile-label" data-i18n="encCount">Count</div>
-                <div class="tile-value" data-efield="count">—</div>
-                <div class="tile-sub" data-efield="turns">—</div>
-              </div>
-              <div class="tile">
-                <div class="tile-label" data-i18n="encSpeed">Speed</div>
-                <div class="tile-value" data-efield="speed">—</div>
-              </div>
-              <div class="tile">
-                <div class="tile-label" data-i18n="encDir">Direction check</div>
-                <div class="tile-value enc-dir" data-efield="dir">—</div>
-                <label class="enc-invert"><input type="checkbox" data-efield="invert"> <span data-i18n="encInvert">Flip direction</span></label>
-              </div>
-            </div>
-            <div class="enc-actions">
-              <button class="btn btn-secondary" data-efield="zero" data-i18n="encZero">Zero</button>
-              <label class="ks-supply enc-turns"><span data-i18n="encTurnsInput">Turns</span>
-                <input type="number" min="1" step="1" value="10" data-efield="turnsInput">
-              </label>
-              <button class="btn btn-secondary" data-efield="oneTurn" data-i18n="encTurned">I turned it</button>
-              <label class="ks-supply"><span data-i18n="encCpr">Counts per rev</span>
-                <input type="number" min="0" step="0.1" data-efield="cpr">
-              </label>
-            </div>
-          </div>
-          <div class="motor-row" data-emotor="2">
-            <div class="motor-head">
-              <i class="motor-swatch" style="background: var(--series-2)"></i>
-              <span class="motor-name" data-i18n="motor2">Motor 2</span>
-            </div>
-            <div class="tiles">
-              <div class="tile">
-                <div class="tile-label" data-i18n="encCount">Count</div>
-                <div class="tile-value" data-efield="count">—</div>
-                <div class="tile-sub" data-efield="turns">—</div>
-              </div>
-              <div class="tile">
-                <div class="tile-label" data-i18n="encSpeed">Speed</div>
-                <div class="tile-value" data-efield="speed">—</div>
-              </div>
-              <div class="tile">
-                <div class="tile-label" data-i18n="encDir">Direction check</div>
-                <div class="tile-value enc-dir" data-efield="dir">—</div>
-                <label class="enc-invert"><input type="checkbox" data-efield="invert"> <span data-i18n="encInvert">Flip direction</span></label>
-              </div>
-            </div>
-            <div class="enc-actions">
-              <button class="btn btn-secondary" data-efield="zero" data-i18n="encZero">Zero</button>
-              <label class="ks-supply enc-turns"><span data-i18n="encTurnsInput">Turns</span>
-                <input type="number" min="1" step="1" value="10" data-efield="turnsInput">
-              </label>
-              <button class="btn btn-secondary" data-efield="oneTurn" data-i18n="encTurned">I turned it</button>
-              <label class="ks-supply"><span data-i18n="encCpr">Counts per rev</span>
-                <input type="number" min="0" step="0.1" data-efield="cpr">
-              </label>
-            </div>
-          </div>
-          <p class="test-warning" data-i18n="encHint">To find counts per rev: press Zero, turn the output shaft exactly one turn by hand, then press "I turned it one rev".</p>
-          <div class="card-head">
-            <h3 class="chart-title" id="encChartTitle"></h3>
-            <div class="chart-legend" id="encLegend"></div>
-          </div>
-          <div class="chart" id="encChart"></div>
-        </section>
-
       </div>
 
       <div class="tab-panel" data-panel="board" hidden>
