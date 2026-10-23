@@ -181,7 +181,6 @@ let encSettings = { cpr: {}, invert: {} };
 try { encSettings = { ...encSettings, ...JSON.parse(localStorage.getItem(ENC_STORAGE_KEY)) }; } catch { /* storage unavailable */ }
 const newEnc = () => ({ count: null, cps: 0 });
 const encData = { 1: newEnc(), 2: newEnc() };
-const encDirCheck = { 1: null, 2: null };   // null unknown, true matches +, false reversed
 let encSim = null;   // demo: { timer, count: {1,2}, speed: {1,2} }
 
 // Speed control: the firmware's SPD report for the running motor
@@ -515,9 +514,6 @@ function handleLine(line) {
       encData[m] = { count, cps };
       encChart.push(m, encSpeedValue(m, cps));
       rpmChart.push(m, encRpm(m, cps));
-      // While this motor is driven, does + duty give positive counts?
-      const duty = testState === 1 ? motorDuty[m] : 0;
-      if (duty !== 0 && Math.abs(cps) > 20) encDirCheck[m] = Math.sign(cps) === Math.sign(duty);
     }
     return;
   }
@@ -852,9 +848,6 @@ function renderEnc(state) {
     field('turns').textContent = has && cpr ? t('encTurns', { n: (d.count / cpr).toFixed(2) }) : '—';
     field('speed').textContent = !has ? '—'
       : cpr ? `${Math.round((d.cps * 60) / cpr)} RPM` : `${Math.round(d.cps)} ${t('cpsUnit')}`;
-    const check = encDirCheck[m];
-    field('dir').textContent = check === null ? t('encDirUnknown') : check ? t('encDirOk') : t('encDirBad');
-    field('dir').dataset.state = check === null ? '' : check ? 'ok' : 'bad';
     field('invert').checked = Boolean(encSettings.invert[m]);
     field('zero').disabled = !live;
     field('oneTurn').disabled = !live || !d.count;
@@ -1102,7 +1095,6 @@ function stopEncSim() {
 function resetEncData() {
   for (const m of MOTORS) {
     encData[m] = newEnc();
-    encDirCheck[m] = null;
   }
   encChart.clear();
 }
@@ -1132,7 +1124,6 @@ for (const row of els.encCard.querySelectorAll('[data-emotor]')) {
   field('invert').addEventListener('change', () => {
     encSettings.invert[m] = field('invert').checked;
     saveEnc();
-    encDirCheck[m] = null;   // re-check with the new sign
     if (port) send(`ENCINV,${m},${encSettings.invert[m] ? 1 : 0}`);
     render();
   });
