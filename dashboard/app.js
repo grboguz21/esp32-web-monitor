@@ -648,12 +648,20 @@ function renderInfo() {
   els.chipMac.textContent = info.mac;
 }
 
-// Usage bar: fills with the ratio and shifts from --heap-low to --heap-high as it fills
+// Usage bar: fills with the ratio; green up to 40 %, to yellow by 70 %, to red when full
+function meterColor(ratio) {
+  if (ratio <= 0.4) return 'var(--meter-good)';
+  if (ratio <= 0.7) {
+    const k = Math.round(((ratio - 0.4) / 0.3) * 100);
+    return `color-mix(in oklab, var(--meter-mid) ${k}%, var(--meter-good))`;
+  }
+  const k = Math.round(((ratio - 0.7) / 0.3) * 100);
+  return `color-mix(in oklab, var(--meter-bad) ${k}%, var(--meter-mid))`;
+}
+
 function setMeter(bar, ratio) {
   bar.style.width = ratio !== null ? `${(ratio * 100).toFixed(1)}%` : '0';
-  bar.style.background = ratio !== null
-    ? `color-mix(in oklab, var(--heap-high) ${Math.round(ratio * 100)}%, var(--heap-low))`
-    : '';
+  bar.style.background = ratio !== null ? meterColor(ratio) : '';
 }
 
 function renderHealth(state) {

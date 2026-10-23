@@ -10,8 +10,9 @@
   --secondary-bg: #eef0f4;
   --offline: #9ca3af;
   --waiting: #f59e0b;
-  --heap-low: #c3c8d0;    /* used-RAM bar: this color when empty, --heap-high when full */
-  --heap-high: #dc2626;
+  --meter-good: #16a34a;  /* usage bars: green, then yellow, then red as they fill */
+  --meter-mid: #eab308;
+  --meter-bad: #dc2626;
   --online: #16a34a;
   --log-bg: #f8f9fb;
   --banner-bg: #fee2e2;
@@ -55,8 +56,9 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #0f1115;
-    --heap-low: #ffffff;
-    --heap-high: #ef4444;
+    --meter-good: #22c55e;
+    --meter-mid: #facc15;
+    --meter-bad: #ef4444;
     --surface: #181b21;
     --sidebar: #14171c;
     --border: #2a2e37;
@@ -89,8 +91,9 @@
 
 :root[data-theme="dark"] {
   --bg: #0f1115;
-  --heap-low: #ffffff;
-  --heap-high: #ef4444;
+  --meter-good: #22c55e;
+  --meter-mid: #facc15;
+  --meter-bad: #ef4444;
   --surface: #181b21;
   --sidebar: #14171c;
   --border: #2a2e37;
