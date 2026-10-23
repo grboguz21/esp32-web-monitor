@@ -1306,12 +1306,15 @@ document.querySelectorAll('[data-pfield="demo"]').forEach((b) => b.addEventListe
   else stopDemo();
 }));
 
+// Reset: lowest voltage / peak current start again from now, and the charts start empty
 document.querySelectorAll('[data-pfield="reset"]').forEach((b) => b.addEventListener('click', () => {
   for (const m of MOTORS) {
     const mp = motorPower[m];
     mp.minVoltage = mp.power?.voltage ?? null;
     mp.maxCurrentMa = mp.power?.currentMa ?? null;
   }
+  currentChart.clear();
+  voltageChart.clear();
   render();
 }));
 
