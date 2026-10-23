@@ -143,6 +143,12 @@ profile kept in the ESP32's flash. The built-in defaults are motor 1's numbers. 
 reads the profiles on connect and saves changes back; `PROFILE?`, `KICK`, `MAXRPM`, `FF`,
 `SAVE` and `DEFAULTS` do the same over serial (see the protocol comment in `src/main.cpp`).
 
+**Calibration tab.** The dashboard runs the same measurements on any motor in about two
+minutes: start thresholds (slow ramps), the steady-state curve, and step responses for tau, K
+and kA, then offers calm / medium / aggressive SIMC gains and saves the profile to the board.
+The math is in `dashboard/calib.js`; run against the recorded data above it gives the same
+curve, tau 117-139 ms and K 97-106 RPM/V.
+
 ## Validation
 
 Data: [`data/motor1_speed_control_raw.csv`](data/motor1_speed_control_raw.csv), from

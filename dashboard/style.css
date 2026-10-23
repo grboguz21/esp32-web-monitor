@@ -988,3 +988,36 @@ h2[data-help] {
   color: var(--muted);
 }
 .profile-row b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* Calibration */
+.cal-top { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin-bottom: 14px; }
+.cal-top .field { width: 220px; }
+.cal-steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 0 0 12px; padding: 0; list-style: none; }
+@media (max-width: 900px) { .cal-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.cal-steps li {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 2px 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--tile-bg);
+  font-size: var(--fs-base);
+  font-weight: 600;
+}
+.cal-result { grid-column: 2; color: var(--muted); font-size: var(--fs-xs); font-weight: 400; font-variant-numeric: tabular-nums; }
+.cal-result:empty::before { content: '\00a0'; }
+.cal-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--secondary-bg); border: 2px solid var(--border); }
+.cal-steps li[data-state="run"] .cal-dot { background: var(--accent); border-color: var(--accent); animation: pulse 1.6s ease-out infinite; --state-color: var(--accent); }
+.cal-steps li[data-state="done"] .cal-dot { background: var(--online); border-color: var(--online); }
+.cal-steps li[data-state="fail"] .cal-dot { background: var(--danger); border-color: var(--danger); }
+.cal-progress { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; font-size: var(--fs-sm); color: var(--muted); }
+.cal-progress .meter { flex: 1; max-width: 320px; }
+.cal-tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 14px 0 12px; }
+@media (max-width: 900px) { .cal-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.cal-apply { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; }
+.cal-apply .field { width: 180px; }
+.cal-gains { align-self: center; font-size: var(--fs-sm); color: var(--muted); font-variant-numeric: tabular-nums; }
+.cal-gains b { color: var(--text); }
+.field select { width: 100%; }

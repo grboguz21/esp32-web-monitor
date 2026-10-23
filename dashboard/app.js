@@ -216,6 +216,7 @@ const spdRunning = () => testState === 1 && (spd?.mode === 1 || spd?.mode === 2)
 // Distance test: the firmware's MOVE report (counts from where the move started)
 const MV_STORAGE_KEY = 'esp32-dashboard-move';
 const DEFAULT_CPR = 186.2;
+const CONTROL_TICK_S = 0.005;   // firmware control period
 let mv = null;        // { phase, target, pos, profileRpm, finalError }
 let mvMotor = null;   // motor of the last move started from this page
 let mvStartedAt = null;   // performance.now() when the last move was sent
@@ -569,6 +570,10 @@ function handleLine(line) {
       encData[m] = { count, cps };
       encChart.push(m, encSpeedValue(m, cps));
       rpmChart.push(m, encRpm(m, cps));
+      if (cal?.motor === m) {
+        cal.encSamples.push(encRpm(m, cps));
+        calChart.push('rpm', encRpm(m, cps));
+      }
     }
     return;
   }
@@ -577,6 +582,15 @@ function handleLine(line) {
     const [state, motor, duty, remainingMs] = fields.map(Number);
     testState = state;
     testOutput = { motor, duty, remainingMs };
+    return;
+  }
+
+  // 200 Hz control log, only switched on by the calibration's step test
+  if (type === 'L') {
+    if (cal?.logSink && fields.length === 7) {
+      const [tUs, duty, , , , , speed] = fields.map(Number);
+      cal.logSink.push({ t: tUs / 1e6, duty, rpm: speed });
+    }
     return;
   }
 
@@ -895,6 +909,7 @@ function renderMove(state) {
 }
 
 function renderSpd(state) {
+  renderCal(state);
   renderProfile();
   const supported = state === 'online' && spd !== null;
   const running = supported && spdRunning();
@@ -1339,6 +1354,290 @@ for (const el of [els.testDuty1, els.testDuty2]) {
   el.addEventListener('change', () => { if (dutyRunning()) startTest(); });
 }
 
+// ---------- Calibration ----------
+// Runs the same measurements as tools/kv_sweep.py and tools/step_test.py from the page, on
+// one motor in open loop: start thresholds (slow ramps), the steady-state curve (duty steps
+// down from 100 %), then step responses for tau, K and kA; SIMC turns those into gains.
+
+let cal = null;        // the running calibration: { motor, abort, encSamples, logSink }
+let calResult = null;  // { motor, kickPlus, kickMinus, ffPlus, ffMinus, maxRpm, tau, k, theta, ka, presets }
+const CAL_STEPS = ['kick', 'sweep', 'step', 'gains'];
+const calChart = new LiveChart(document.getElementById('calChart'), {
+  series: [{ key: 'rpm', label: () => t('spdSpeedNow'), short: '', color: '--series-1' }],
+  format: (v) => `${Math.round(v)} RPM`,
+  minSpan: 50,
+  windowMs: 30000,
+  labels: chartLabels,
+});
+const calEls = {
+  card: document.getElementById('calCard'),
+  badge: document.getElementById('calBadge'),
+  motor: document.getElementById('calMotor'),
+  start: document.getElementById('calStartBtn'),
+  stop: document.getElementById('calStopBtn'),
+  steps: document.getElementById('calSteps'),
+  bar: document.getElementById('calBar'),
+  status: document.getElementById('calStatus'),
+  results: document.getElementById('calResults'),
+  preset: document.getElementById('calPreset'),
+  gains: document.getElementById('calGains'),
+  save: document.getElementById('calSaveBtn'),
+  kick: document.getElementById('calKickVal'),
+  stopAt: document.getElementById('calStopVal'),
+  max: document.getElementById('calMaxVal'),
+  curve: document.getElementById('calCurveVal'),
+  tau: document.getElementById('calTauVal'),
+  k: document.getElementById('calKVal'),
+  ka: document.getElementById('calKaVal'),
+  theta: document.getElementById('calThetaVal'),
+};
+let calStatusText = '';
+let calProgress = null;
+
+class CalAbort extends Error {}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function calWait(ms) {
+  const end = performance.now() + ms;
+  while (performance.now() < end) {
+    if (!cal || cal.abort || !port) throw new CalAbort();
+    await sleep(Math.min(50, end - performance.now()));
+  }
+}
+const calRun = (duty) => send(`RUN,${cal.motor},${duty.toFixed(1)},0`);
+const calStepState = (step, state, result) => {
+  const li = calEls.steps.querySelector(`[data-step="${step}"]`);
+  if (state) li.dataset.state = state;
+  else delete li.dataset.state;
+  if (result !== undefined) li.querySelector('.cal-result').textContent = result;
+};
+function calSay(text, progress) {
+  calStatusText = text;
+  if (progress !== undefined) calProgress = progress;
+  render();
+}
+// Supply during the test, so curves and thresholds are stored as if at 12 V (FF_TABLE_V)
+const calVolts = () => (battery?.measured ? battery.volts : 12);
+const dirLabel = (dir) => (dir > 0 ? '+' : '−');
+
+// Mean RPM over the next `ms`, from the ENC reports (25 Hz)
+async function calAverage(ms) {
+  cal.encSamples = [];
+  await calWait(ms);
+  const v = cal.encSamples;
+  return v.length ? v.reduce((a, b) => a + b, 0) / v.length : 0;
+}
+
+// 1. Ramp the duty slowly until the motor turns; the duty then is the start threshold
+async function calKick(dir) {
+  const RATE = 4;        // % per second
+  const LIMIT = 70;
+  let duty = 0;
+  let moving = 0;
+  cal.encSamples = [];
+  while (duty < LIMIT) {
+    duty += RATE * 0.1;
+    calRun(dir * duty);
+    calSay(t('calRampDir', { dir: dirLabel(dir), duty: `${num(duty, 1)} %` }));
+    await calWait(100);
+    const last = cal.encSamples.slice(-2);
+    cal.encSamples = [];
+    const speed = last.length ? last[last.length - 1] : 0;
+    if (Math.abs(speed) > 15) {
+      if (Math.sign(speed) !== dir) {   // counts the wrong way: flip, let it stop, ramp again
+        const m = cal.motor;
+        encSettings.invert[m] = !encSettings.invert[m];
+        saveEnc();
+        send(`ENCINV,${m},${encSettings.invert[m] ? 1 : 0}`);
+        scheduleSave(m);
+        log(t('calFlipped'));
+        send('STOP');
+        await calWait(1500);
+        duty = 0;
+        moving = 0;
+        cal.encSamples = [];
+        continue;
+      }
+      if (++moving >= 2) break;
+    } else {
+      moving = 0;
+    }
+  }
+  send('STOP');
+  if (duty >= LIMIT) throw new Error(t('calNoStart', { duty: `${LIMIT} %` }));
+  await calWait(1500);
+  return (duty - RATE * 0.1) * calVolts() / 12;   // the step before it was seen moving
+}
+
+// 2. Steady-state speed at duties stepping down from 100 % until the motor stops
+async function calSweep(dir, kick, done, total) {
+  const duties = [100, 80, 60, 50, 40, 30, 25];
+  for (let d = 22; d >= 2; d -= d > 15 ? 3 : 1) duties.push(d);
+  const points = [];
+  for (let i = 0; i < duties.length; i++) {
+    const duty = duties[i];
+    if (duty < kick * 0.3) break;
+    calRun(dir * duty);
+    calSay(t('calSweepAt', { dir: dirLabel(dir), duty: `${duty} %` }), (done + i / duties.length) / total);
+    await calWait(i === 0 ? 2500 : 1300);
+    const rpm = Math.abs(await calAverage(1000));
+    points.push({ duty: duty * calVolts() / 12, rpm });
+    if (rpm < Calib.STOPPED_RPM) break;
+  }
+  send('STOP');
+  await calWait(1500);
+  const table = Calib.buildFfTable(points);
+  if (!table) throw new Error(t('calNoStart', { duty: '100 %' }));
+  return table;
+}
+
+// 3. Step responses between ~30 % and ~60 % of top speed, logged at 200 Hz
+async function calStepTest(table, dir) {
+  const max = table[table.length - 1][0];
+  const volts = calVolts();
+  // back to real duty at this supply, rounded the way RUN sends it so the log matches
+  const a = Math.round(Calib.dutyFor(table, 0.3 * max) * 12 / volts * 10) / 10;
+  const b = Math.round(Calib.dutyFor(table, 0.6 * max) * 12 / volts * 10) / 10;
+  const results = [];
+  for (const [from, to] of [[a, b], [b, a]]) {
+    calSay(t('calStepAt', { dir: dirLabel(dir), a: `${num(from, 0)} %`, b: `${num(to, 0)} %` }));
+    calRun(dir * from);
+    await calWait(2000);
+    cal.logSink = [];
+    send('LOG,1');
+    await calWait(300);
+    calRun(dir * to);
+    await calWait(1500);
+    send('LOG,0');
+    await calWait(300);
+    const r = Calib.analyseStep(cal.logSink, dir * from, dir * to, volts);
+    cal.logSink = null;
+    if (r) results.push(r);
+  }
+  send('STOP');
+  await calWait(1500);
+  return results;
+}
+
+async function runCalibration() {
+  const m = Number(calEls.motor.value);
+  if (!port) return calSay(t('calNeedPort'));
+  if (!(encSettings.cpr[m] > 0)) return calSay(t('calNeedCpr'));
+  stopSimTest();
+  cal = { motor: m, abort: false, encSamples: [], logSink: null };
+  calResult = null;
+  calChart.clear();
+  for (const step of CAL_STEPS) calStepState(step, null, '');
+  let step = 'kick';
+  try {
+    calStepState('kick', 'run');
+    const kickPlus = await calKick(1);
+    const kickMinus = await calKick(-1);
+    calStepState('kick', 'done', `+${num(kickPlus, 1)} / −${num(kickMinus, 1)} %`);
+
+    step = 'sweep';
+    calStepState('sweep', 'run');
+    const ffPlus = await calSweep(1, kickPlus, 0, 2);
+    const ffMinus = await calSweep(-1, kickMinus, 1, 2);
+    const maxRpm = Math.floor(Math.min(ffPlus[ffPlus.length - 1][0], ffMinus[ffMinus.length - 1][0]) / 10) * 10;
+    calStepState('sweep', 'done', `${maxRpm} RPM`);
+
+    step = 'step';
+    calStepState('step', 'run');
+    const steps = [...await calStepTest(ffPlus, 1), ...await calStepTest(ffMinus, -1)];
+    if (steps.length === 0) throw new Error('no step data');
+    const mean = (k) => steps.reduce((acc, r) => acc + r[k], 0) / steps.length;
+    const tau = mean('tau');
+    const k = mean('k');
+    const theta = mean('theta') + CONTROL_TICK_S;   // the fit sees the speed estimate's delay; add one tick
+    calStepState('step', 'done', `τ ${num(tau * 1000, 0)} ms · K ${num(k, 0)}`);
+
+    step = 'gains';
+    calResult = {
+      motor: m, kickPlus, kickMinus, ffPlus, ffMinus, maxRpm, tau, k, theta,
+      ka: tau / k, presets: Calib.presets(tau, k, theta),
+    };
+    calStepState('gains', 'done', 'SIMC');
+    calSay(t('calDone'), 1);
+  } catch (e) {
+    send('STOP');
+    send('LOG,0');
+    calStepState(step, 'fail');
+    calSay(e instanceof CalAbort ? t('calStopped') : t('calFailed', { msg: e.message }), null);
+  } finally {
+    cal = null;
+    render();
+  }
+}
+
+function saveCalibration() {
+  const r = calResult;
+  if (!r || !port) return;
+  const g = r.presets[calEls.preset.value];
+  const ff = (rows) => rows.map(([rpm, duty]) => `${rpm.toFixed(1)}:${duty.toFixed(1)}`).join(';');
+  send(`KICK,${r.motor},${r.kickPlus.toFixed(1)},${r.kickMinus.toFixed(1)}`);
+  send(`FF,${r.motor},+,${ff(r.ffPlus)}`);
+  send(`FF,${r.motor},-,${ff(r.ffMinus)}`);
+  send(`MAXRPM,${r.motor},${r.maxRpm}`);
+  send(`GAIN,${g.kp.toFixed(5)},${g.ki.toFixed(4)},${r.motor}`);
+  send(`REF,100,${r.ka.toFixed(5)},${r.motor}`);
+  send(`SAVE,${r.motor}`);
+  send(`PROFILE?,${r.motor}`);
+  calSay(t('calSaved', { m: r.motor }));
+}
+
+function renderCal(state) {
+  const running = cal !== null;
+  const online = state === 'online';
+  calEls.start.disabled = running || !online;
+  calEls.stop.disabled = !running;
+  calEls.motor.disabled = running;
+  calEls.badge.textContent = t(running ? 'testRunning' : online ? 'testIdle' : 'sensorWaiting');
+  if (running) calEls.badge.dataset.level = 'run';
+  else delete calEls.badge.dataset.level;
+  calEls.status.textContent = calStatusText || t(online ? 'calReady' : 'calNeedPort');
+  setMeter(calEls.bar, calProgress);
+  if (calProgress !== null) calEls.bar.style.background = 'var(--accent)';
+
+  const r = calResult;
+  calEls.results.hidden = !r;
+  if (!r) return;
+  calEls.kick.textContent = `+${num(r.kickPlus, 1)} / −${num(r.kickMinus, 1)} %`;
+  calEls.stopAt.textContent = t('calStopAt', { p: num(r.ffPlus[0][1], 1), m: num(r.ffMinus[0][1], 1) });
+  calEls.max.textContent = `${r.maxRpm} RPM`;
+  calEls.curve.textContent = t('calPoints', { p: r.ffPlus.length, m: r.ffMinus.length });
+  calEls.tau.textContent = `${num(r.tau * 1000, 0)} ms`;
+  calEls.k.textContent = t('calKUnit', { k: num(r.k, 1) });
+  calEls.ka.textContent = num(r.ka, 5);
+  calEls.theta.textContent = t('calTheta', { t: num(r.theta * 1000, 0) });
+  const g = r.presets[calEls.preset.value];
+  calEls.gains.innerHTML = `Kp <b>${num(g.kp, 4)}</b> · Ki <b>${num(g.ki, 3)}</b>`;
+  calEls.save.disabled = !online || running;
+}
+
+function renderCalMotors() {
+  const selected = calEls.motor.value || '1';
+  calEls.motor.innerHTML = '';
+  for (const [key, target] of Object.entries(TEST_TARGETS)) {
+    calEls.motor.add(new Option(`${t(target.label)} · ${target.in1} / ${target.in2}`, key));
+  }
+  calEls.motor.value = selected;
+}
+
+calEls.start.addEventListener('click', () => {
+  calStatusText = '';
+  calProgress = 0;
+  runCalibration();
+});
+calEls.stop.addEventListener('click', () => {
+  if (cal) cal.abort = true;
+  send('STOP');
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && cal) cal.abort = true; });
+calEls.preset.addEventListener('change', render);
+calEls.save.addEventListener('click', saveCalibration);
+renderCalMotors();
+
 // Tells the firmware the page is alive; without it the motor stops after 1 s
 setInterval(() => { if (port) send('PING'); }, 200);
 
@@ -1516,6 +1815,7 @@ I18N.onChange(() => {
   renderWiring();
   mvChart.renderLegend();
   mvSpeedChart.renderLegend();
+  renderCalMotors();
   renderMoveMotors();
   dutyChart.renderLegend();
   rpmChart.renderLegend();

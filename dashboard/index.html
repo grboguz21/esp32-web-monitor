@@ -67,6 +67,7 @@
           <button class="tab" role="tab" data-tab="encoder" aria-selected="false" data-i18n="tabEncoder">Encoder</button>
           <button class="tab" role="tab" data-tab="motor" aria-selected="false" data-i18n="tabMotor">Motor</button>
           <button class="tab" role="tab" data-tab="pid" aria-selected="false" data-i18n="tabPid">PID</button>
+          <button class="tab" role="tab" data-tab="calib" aria-selected="false" data-i18n="tabCalib">Calibration</button>
           <button class="tab" role="tab" data-tab="board" aria-selected="false" data-i18n="tabBoard">Board pinout</button>
         </nav>
         <div class="toolbar">
@@ -519,6 +520,57 @@
         </section>
       </div>
 
+      <div class="tab-panel" data-panel="calib" hidden>
+        <section class="card cal-card" id="calCard">
+          <div class="card-head">
+            <h2 data-help="cal"><span data-i18n="calTitle">Calibration</span></h2>
+            <span class="badge" id="calBadge"></span>
+          </div>
+          <div class="cal-top">
+            <label class="field"><span data-i18n="testPin">Motor</span>
+              <select id="calMotor"></select>
+            </label>
+            <div class="test-buttons">
+              <button id="calStartBtn" class="btn"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5v11l9-5.5z" fill="currentColor"/></svg><span data-i18n="calStart">Start</span></button>
+              <button id="calStopBtn" class="btn btn-danger"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="3" width="10" height="10" rx="1.5" fill="currentColor"/></svg><span data-i18n="testStop">Stop</span></button>
+            </div>
+          </div>
+          <ol class="cal-steps" id="calSteps">
+            <li data-step="kick"><span class="cal-dot"></span><span data-i18n="calStepKick">Start thresholds</span><span class="cal-result"></span></li>
+            <li data-step="sweep"><span class="cal-dot"></span><span data-i18n="calStepSweep">Speed curve</span><span class="cal-result"></span></li>
+            <li data-step="step"><span class="cal-dot"></span><span data-i18n="calStepStep">Step response</span><span class="cal-result"></span></li>
+            <li data-step="gains"><span class="cal-dot"></span><span data-i18n="calStepGains">Gains</span><span class="cal-result"></span></li>
+          </ol>
+          <div class="cal-progress">
+            <div class="meter"><span id="calBar"></span></div>
+            <span id="calStatus"></span>
+          </div>
+          <div class="card-head">
+            <h3 class="chart-title" data-i18n="calChart">Speed (RPM)</h3>
+          </div>
+          <div class="chart" id="calChart"></div>
+          <div class="cal-results" id="calResults" hidden>
+            <div class="tiles cal-tiles">
+              <div class="tile"><div class="tile-label" data-i18n="calKick">Start threshold</div><div class="tile-value" id="calKickVal">—</div><div class="tile-sub" id="calStopVal"></div></div>
+              <div class="tile"><div class="tile-label" data-i18n="calMax">Top speed</div><div class="tile-value" id="calMaxVal">—</div><div class="tile-sub" id="calCurveVal"></div></div>
+              <div class="tile"><div class="tile-label" data-i18n="calModel">Model</div><div class="tile-value" id="calTauVal">—</div><div class="tile-sub" id="calKVal"></div></div>
+              <div class="tile"><div class="tile-label">kA</div><div class="tile-value" id="calKaVal">—</div><div class="tile-sub" id="calThetaVal"></div></div>
+            </div>
+            <div class="cal-apply">
+              <label class="field"><span data-i18n="calPreset">Response</span>
+                <select id="calPreset">
+                  <option value="calm" data-i18n="calCalm">Calm</option>
+                  <option value="medium" data-i18n="calMedium">Medium</option>
+                  <option value="aggressive" data-i18n="calAggressive">Aggressive</option>
+                </select>
+              </label>
+              <span class="cal-gains" id="calGains"></span>
+              <button id="calSaveBtn" class="btn" data-i18n="calSave">Save to board</button>
+            </div>
+          </div>
+        </section>
+      </div>
+
       <div class="tab-panel" data-panel="board" hidden>
         <section class="card board-intro">
           <div>
@@ -547,6 +599,7 @@
   <script src="board.js"></script>
   <script src="help.js"></script>
   <script src="chart.js"></script>
+  <script src="calib.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
