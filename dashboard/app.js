@@ -622,9 +622,8 @@ function renderHealth(state) {
   els.healthCard.toggleAttribute('data-stale', state !== 'online');
 
   if (!health) {
-    for (const el of [els.hFree, els.hFreeSub, els.hLoopAvg, els.hLoopMax, els.hStack, els.hStackSub]) {
-      el.textContent = '—';
-    }
+    for (const el of [els.hFree, els.hLoopAvg, els.hStack]) el.textContent = '—';
+    for (const el of [els.hFreeSub, els.hLoopMax, els.hStackSub]) el.textContent = '';
     for (const bar of [els.hFreeBar, els.hLoopBar, els.hStackBar]) setMeter(bar, null);
     return;
   }
@@ -699,7 +698,7 @@ function renderPower(state) {
             currentSub: t('peakI', { i: formatCurrent(m.maxCurrentMa) }),
             power: formatPower(m.power.powerMw),
           }
-        : { voltage: '—', voltageSub: '—', current: '—', currentSub: '—', power: '—' };
+        : { voltage: '—', voltageSub: '', current: '—', currentSub: '', power: '—' };
       for (const [name, text] of Object.entries(values)) field(name).textContent = text;
     }
   }
@@ -804,14 +803,14 @@ function renderMove(state) {
   els.mvChartTitle.textContent = t(els.mvUnit.value === 'm' ? 'mvChartMeters' : 'mvChartTurns');
   const show = supported && mv.phase !== 0;
   els.mvTargetNow.textContent = show ? mvFormat(mv.target) : '—';
-  els.mvTargetSub.textContent = show ? mvDetail(mv.target) : '—';
+  els.mvTargetSub.textContent = show ? mvDetail(mv.target) : '';
   els.mvTraveled.textContent = show ? mvFormat(mv.pos) : '—';
-  els.mvTraveledSub.textContent = show ? mvDetail(mv.pos) : '—';
+  els.mvTraveledSub.textContent = show ? mvDetail(mv.pos) : '';
   els.mvRemaining.textContent = show ? mvFormat(mv.target - mv.pos) : '—';
-  els.mvProfile.textContent = moving && mv.phase === 1 ? `${Math.round(mv.profileRpm)} RPM` : '—';
+  els.mvProfile.textContent = moving && mv.phase === 1 ? `${Math.round(mv.profileRpm)} RPM` : '';
   const finished = show && (mv.phase === 3 || mv.phase === 2);
   els.mvFinalError.textContent = finished ? mvFormat(mv.target - mv.pos) : '—';
-  els.mvFinalSub.textContent = finished ? mvDetail(mv.target - mv.pos) : '—';
+  els.mvFinalSub.textContent = finished ? mvDetail(mv.target - mv.pos) : '';
 }
 
 function renderSpd(state) {
@@ -827,7 +826,7 @@ function renderSpd(state) {
   els.spdSpeedNow.textContent = supported ? `${Math.round(spd.speed)} RPM` : '—';
   els.spdErrorNow.textContent = show ? `${Math.round(spd.target - spd.speed)} RPM` : '—';
   els.spdDutyNow.textContent = show ? signedPercent(spd.ff + spd.pi) : '—';
-  els.spdDutySplit.textContent = show ? `FF ${spd.ff.toFixed(1)} % · PI ${spd.pi >= 0 ? '+' : ''}${spd.pi.toFixed(1)} %` : '—';
+  els.spdDutySplit.textContent = show ? `FF ${spd.ff.toFixed(1)} % · PI ${spd.pi >= 0 ? '+' : ''}${spd.pi.toFixed(1)} %` : '';
 }
 
 function renderEnc(state) {
@@ -845,7 +844,7 @@ function renderEnc(state) {
     const cpr = encSettings.cpr[m] || 0;
     const has = live && d.count !== null;
     field('count').textContent = has ? d.count.toLocaleString() : '—';
-    field('turns').textContent = has && cpr ? t('encTurns', { n: (d.count / cpr).toFixed(2) }) : '—';
+    field('turns').textContent = has && cpr ? t('encTurns', { n: (d.count / cpr).toFixed(2) }) : '';
     field('speed').textContent = !has ? '—'
       : cpr ? `${Math.round((d.cps * 60) / cpr)} RPM` : `${Math.round(d.cps)} ${t('cpsUnit')}`;
     field('invert').checked = Boolean(encSettings.invert[m]);

@@ -420,6 +420,7 @@ select:disabled { opacity: 0.6; }
   font-variant-numeric: tabular-nums;
 }
 .tile-value.warn { color: var(--waiting); }
+.tile-sub:empty::before { content: '\00a0'; }   /* keeps the row height with no text */
 .tile-sub { color: var(--muted); font-size: 0.7rem; }
 
 .meter {
