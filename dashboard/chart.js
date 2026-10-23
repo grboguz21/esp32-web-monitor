@@ -132,20 +132,20 @@ class LiveChart {
       ctx.fillText(this.labels.axis(s), px, h - 6);
     }
 
-    // Faint background grid: a vertical line every few seconds and a horizontal one at
-    // every half tick step (quarters of the plot while there is no data)
+    // Background grid: a vertical line every 2.5 s and a horizontal one at every quarter
+    // tick step (eighths of the plot while there is no data)
     ctx.save();
     ctx.strokeStyle = token('--border');
-    ctx.globalAlpha = 0.45;
+    ctx.globalAlpha = 0.8;
     ctx.lineWidth = 1;
     ctx.beginPath();
-    const gridS = seconds % 5 === 0 && seconds / 5 <= 12 ? 5 : seconds / 6;
+    const gridS = seconds % 2.5 === 0 && seconds / 2.5 <= 24 ? 2.5 : seconds / 12;
     for (let s = gridS; s < seconds; s += gridS) {
       const px = Math.round(pad.left + (1 - s / seconds) * pw) + 0.5;
       ctx.moveTo(px, pad.top);
       ctx.lineTo(px, pad.top + ph);
     }
-    const rows = active.length ? Math.round(((hi - lo) / step) * 2) : 4;
+    const rows = active.length ? Math.round(((hi - lo) / step) * 4) : 8;
     for (let i = 0; i <= rows; i++) {
       const py = Math.round(pad.top + (i / rows) * ph) + 0.5;
       ctx.moveTo(pad.left, py);

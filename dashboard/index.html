@@ -282,6 +282,7 @@
             <h2 data-help="control"><span data-i18n="controlTitle">Motor Control</span></h2>
             <span class="badge" id="testBadge"></span>
           </div>
+          <div class="control-grid">
           <div class="duty-rows">
             <label class="duty-row">
               <span class="duty-name"><i class="motor-swatch" style="background: var(--series-1)"></i><span data-i18n="motor1">Motor 1</span></span>
@@ -296,7 +297,7 @@
               <span class="duty-now" id="testNow2">—</span>
             </label>
           </div>
-          <div class="test-controls run-controls">
+          <div class="run-controls">
             <label class="field"><span data-i18n="testDuration">Duration (s)</span>
               <input id="testDuration" type="number" min="0" step="1" value="">
             </label>
@@ -304,6 +305,7 @@
               <button id="testStartBtn" class="btn" data-i18n="testStart">Start</button>
               <button id="testStopBtn" class="btn btn-danger" data-i18n="testStop">Stop</button>
             </div>
+          </div>
           </div>
           <div class="chart-pair">
             <div>

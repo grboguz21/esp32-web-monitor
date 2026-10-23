@@ -822,10 +822,22 @@ h2[data-help] {
 
 
 /* Motor control */
-.run-controls { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); }
-.run-controls .test-buttons { grid-column: auto; }
-.duty-rows { display: grid; gap: 8px; margin-bottom: 12px; }
-.duty-row { display: grid; grid-template-columns: 100px minmax(0, 140px) auto 1fr; align-items: center; gap: 10px; font-size: 0.85rem; }
+.control-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 20px;
+  align-items: end;
+  margin-bottom: 16px;
+}
+.run-controls { display: grid; gap: 8px; }
+.duty-rows { display: grid; gap: 8px; }
+.duty-row {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 120px) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  font-size: 0.85rem;
+}
 .duty-row input {
   width: 100%;
   padding: 6px 10px;
@@ -838,11 +850,16 @@ h2[data-help] {
 }
 .duty-name { display: inline-flex; align-items: center; gap: 8px; font-weight: 700; }
 .duty-unit { color: var(--muted); }
-.duty-now { justify-self: end; font-weight: 700; font-variant-numeric: tabular-nums; }
-@media (max-width: 900px) {
-  .run-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .run-controls .test-buttons { grid-column: span 2; }
+.duty-now {
+  justify-self: start;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--secondary-bg);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
+@media (max-width: 900px) { .control-grid { grid-template-columns: 1fr; } }
 
 /* Small inline number field (encoder card) */
 .ks-supply { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; color: var(--muted); font-size: 0.75rem; }
