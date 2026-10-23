@@ -33,12 +33,8 @@ const els = {
   hFree: document.getElementById('hFree'),
   hFreeBar: document.getElementById('hFreeBar'),
   hFreeSub: document.getElementById('hFreeSub'),
-  hMin: document.getElementById('hMin'),
-  hBlock: document.getElementById('hBlock'),
-  hBlockSub: document.getElementById('hBlockSub'),
   hLoopAvg: document.getElementById('hLoopAvg'),
   hLoopMax: document.getElementById('hLoopMax'),
-  hLoopHz: document.getElementById('hLoopHz'),
   hStack: document.getElementById('hStack'),
   powerCards: document.querySelectorAll('.power'),
   testCard: document.getElementById('testCard'),
@@ -628,12 +624,6 @@ function formatBytes(n) {
   return `${n} B`;
 }
 
-function formatRate(hz) {
-  if (hz >= 1e6) return `${(hz / 1e6).toFixed(2)} MHz`;
-  if (hz >= 1000) return `${(hz / 1000).toFixed(1)} kHz`;
-  return `${hz} Hz`;
-}
-
 function renderInfo() {
   if (!info) {
     els.resetReason.textContent = '—';
@@ -657,8 +647,7 @@ function renderHealth(state) {
   els.healthCard.toggleAttribute('data-stale', state !== 'online');
 
   if (!health) {
-    for (const el of [els.hFree, els.hFreeSub, els.hMin, els.hBlock, els.hBlockSub,
-                      els.hLoopAvg, els.hLoopMax, els.hLoopHz, els.hStack]) {
+    for (const el of [els.hFree, els.hFreeSub, els.hLoopAvg, els.hLoopMax, els.hStack]) {
       el.textContent = '—';
     }
     els.hFreeBar.style.width = '0';
@@ -676,16 +665,8 @@ function renderHealth(state) {
     ? t('heapOf', { pct: Math.round(freeRatio * 100), total: formatBytes(total) })
     : t('totalUnknown');
 
-  els.hMin.textContent = formatBytes(health.minFreeHeap);
-
-  // Fragmentation: how much of the free heap is NOT usable as one block
-  const frag = health.freeHeap ? 1 - health.maxAlloc / health.freeHeap : 0;
-  els.hBlock.textContent = formatBytes(health.maxAlloc);
-  els.hBlockSub.textContent = t('fragmentation', { pct: Math.round(frag * 100) });
-
   els.hLoopAvg.textContent = `${health.loopAvgUs} µs`;
   els.hLoopMax.textContent = t('worst', { us: health.loopMaxUs });
-  els.hLoopHz.textContent = formatRate(health.loopHz);
 
   els.hStack.textContent = formatBytes(health.stackFree);
   els.hStack.classList.toggle('warn', health.stackFree < STACK_WARN_BYTES);
