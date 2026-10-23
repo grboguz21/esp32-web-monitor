@@ -885,7 +885,29 @@ h2[data-help] {
 }
 .mv-tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 12px; }
 @media (max-width: 900px) { .mv-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-.chart-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
-@media (max-width: 900px) { .chart-pair { grid-template-columns: 1fr; } }
+.chart-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+/* thin divider that fades out at both ends */
+.chart-pair > div + div { position: relative; }
+.chart-pair > div + div::before {
+  content: '';
+  position: absolute;
+  left: -10px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: linear-gradient(to bottom, transparent, var(--border) 15%, var(--border) 85%, transparent);
+}
+@media (max-width: 900px) {
+  .chart-pair { grid-template-columns: 1fr; }
+  .chart-pair > div + div::before {
+    left: 0;
+    right: 0;
+    top: -10px;
+    bottom: auto;
+    width: auto;
+    height: 1px;
+    background: linear-gradient(to right, transparent, var(--border) 15%, var(--border) 85%, transparent);
+  }
+}
 .mv-estimate { display: flex; flex-wrap: wrap; gap: 6px 20px; margin: 4px 0 10px; font-size: 13px; color: var(--text-secondary, inherit); }
 .mv-estimate b { color: var(--text, inherit); font-weight: 600; font-variant-numeric: tabular-nums; }
