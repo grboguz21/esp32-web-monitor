@@ -30,11 +30,8 @@ const I18N = (() => {
       themeToDark: 'Switch to dark theme',
 
       'state.offline': 'Disconnected',
-      'state.offline.hint': 'Pick a port, hit Connect.',
       'state.waiting': 'Waiting for ESP32',
-      'state.waiting.hint': 'No heartbeat yet. Right port? Firmware on?',
       'state.online': 'Connected',
-      'state.online.hint': 'Alive and ticking.',
       msAgo: '{n} ms ago',
       cores: '{cores} cores @ {mhz} MHz',
 
@@ -343,11 +340,8 @@ const I18N = (() => {
       themeToDark: 'Koyu temaya geç',
 
       'state.offline': 'Bağlı değil',
-      'state.offline.hint': 'Port seç, Bağlan\'a bas.',
       'state.waiting': 'ESP32 bekleniyor',
-      'state.waiting.hint': 'Sinyal yok. Port doğru mu, firmware yüklü mü?',
       'state.online': 'Bağlı',
-      'state.online.hint': 'Canlı, nabız atıyor.',
       msAgo: '{n} ms önce',
       cores: '{cores} çekirdek @ {mhz} MHz',
 

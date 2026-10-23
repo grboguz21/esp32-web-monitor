@@ -19,7 +19,6 @@ const els = {
   unsupported: document.getElementById('unsupported'),
   statusCard: document.getElementById('statusCard'),
   statusLabel: document.getElementById('statusLabel'),
-  statusHint: document.getElementById('statusHint'),
   deviceName: document.getElementById('deviceName'),
   firmwareVersion: document.getElementById('firmwareVersion'),
   uptime: document.getElementById('uptime'),
@@ -603,7 +602,6 @@ function render() {
   const state = currentState();
   els.statusCard.dataset.state = state;
   els.statusLabel.textContent = t(`state.${state}`);
-  els.statusHint.textContent = t(`state.${state}.hint`);
 
   els.connectBtn.textContent = port ? t('disconnect') : t('connect');
   els.connectBtn.disabled = !port && knownPorts.length === 0;
