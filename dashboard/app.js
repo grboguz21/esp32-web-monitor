@@ -36,6 +36,9 @@ const els = {
   hLoopAvg: document.getElementById('hLoopAvg'),
   hLoopMax: document.getElementById('hLoopMax'),
   hStack: document.getElementById('hStack'),
+  hStackBar: document.getElementById('hStackBar'),
+  hStackSub: document.getElementById('hStackSub'),
+  hLoopBar: document.getElementById('hLoopBar'),
   powerCards: document.querySelectorAll('.power'),
   testCard: document.getElementById('testCard'),
   testBadge: document.getElementById('testBadge'),
@@ -128,8 +131,10 @@ function resetReason(name) {
   return [t(`reset.${known ? name : 'UNKNOWN'}`), known ? RESET_LEVELS[name] : 'bad'];
 }
 
-const HEAP_WARN_RATIO = 0.2;     // warn below 20 % free heap
+const HEAP_WARN_RATIO = 0.2;     // warn when less than 20 % of the heap is free
 const STACK_WARN_BYTES = 1024;
+const LOOP_STACK_BYTES = 8192;   // Arduino loop task stack
+const LOOP_BUDGET_US = 5000;     // control tick
 
 let knownPorts = [];    // ports this page already has permission for
 let port = null;        // the open port
@@ -643,33 +648,46 @@ function renderInfo() {
   els.chipMac.textContent = info.mac;
 }
 
+// Usage bar: fills with the ratio and shifts from --heap-low to --heap-high as it fills
+function setMeter(bar, ratio) {
+  bar.style.width = ratio !== null ? `${(ratio * 100).toFixed(1)}%` : '0';
+  bar.style.background = ratio !== null
+    ? `color-mix(in oklab, var(--heap-high) ${Math.round(ratio * 100)}%, var(--heap-low))`
+    : '';
+}
+
 function renderHealth(state) {
   els.healthCard.toggleAttribute('data-stale', state !== 'online');
 
   if (!health) {
-    for (const el of [els.hFree, els.hFreeSub, els.hLoopAvg, els.hLoopMax, els.hStack]) {
+    for (const el of [els.hFree, els.hFreeSub, els.hLoopAvg, els.hLoopMax, els.hStack, els.hStackSub]) {
       el.textContent = '—';
     }
-    els.hFreeBar.style.width = '0';
+    for (const bar of [els.hFreeBar, els.hLoopBar, els.hStackBar]) setMeter(bar, null);
     return;
   }
 
+  // Used RAM: the bar fills and shifts from --heap-low to --heap-high as it fills
   const total = info?.heap;
-  const freeRatio = total ? health.freeHeap / total : null;
-  const heapLow = freeRatio !== null && freeRatio < HEAP_WARN_RATIO;
-  els.hFree.textContent = formatBytes(health.freeHeap);
-  els.hFree.classList.toggle('warn', heapLow);
-  els.hFreeBar.style.width = freeRatio !== null ? `${(freeRatio * 100).toFixed(1)}%` : '0';
-  els.hFreeBar.classList.toggle('warn', heapLow);
+  const usedRatio = total ? Math.min(1, Math.max(0, 1 - health.freeHeap / total)) : null;
+  els.hFree.textContent = total ? formatBytes(total - health.freeHeap) : '—';
+  els.hFree.classList.toggle('warn', usedRatio !== null && usedRatio > 1 - HEAP_WARN_RATIO);
+  setMeter(els.hFreeBar, usedRatio);
   els.hFreeSub.textContent = total
-    ? t('heapOf', { pct: Math.round(freeRatio * 100), total: formatBytes(total) })
+    ? t('heapOf', { pct: Math.round(usedRatio * 100), total: formatBytes(total) })
     : t('totalUnknown');
 
   els.hLoopAvg.textContent = `${health.loopAvgUs} µs`;
-  els.hLoopMax.textContent = t('worst', { us: health.loopMaxUs });
+  const loopRatio = Math.min(1, health.loopMaxUs / LOOP_BUDGET_US);
+  els.hLoopMax.textContent = t('loopBudget', { us: health.loopMaxUs, pct: Math.round(loopRatio * 100) });
+  setMeter(els.hLoopBar, loopRatio);
 
-  els.hStack.textContent = formatBytes(health.stackFree);
+  const stackUsed = Math.max(0, LOOP_STACK_BYTES - health.stackFree);
+  const stackRatio = Math.min(1, stackUsed / LOOP_STACK_BYTES);
+  els.hStack.textContent = formatBytes(stackUsed);
   els.hStack.classList.toggle('warn', health.stackFree < STACK_WARN_BYTES);
+  els.hStackSub.textContent = t('heapOf', { pct: Math.round(stackRatio * 100), total: formatBytes(LOOP_STACK_BYTES) });
+  setMeter(els.hStackBar, stackRatio);
 }
 
 function formatCurrent(ma) {
