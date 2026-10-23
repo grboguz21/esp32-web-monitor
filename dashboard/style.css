@@ -374,6 +374,15 @@ select:disabled { opacity: 0.6; }
 }
 .link-btn:hover { text-decoration: underline; }
 .wiring { margin-top: 10px; font-weight: 400; }
+.wiring-link { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); font-size: 0.85rem; font-weight: 600; }
+.wiring h4 { margin: 14px 0 6px; font-size: 0.85rem; }
+.wiring .w-notes { margin: 8px 0 0; color: var(--muted); font-size: 0.78rem; line-height: 1.6; }
+.wiring .w-ctrl { stroke: var(--accent); }
+.wiring .w-yellow { stroke: #eab308; }
+.wiring .w-green { stroke: #16a34a; }
+.wiring .w-blue { stroke: #2a78d6; }
+.wiring .w-black { stroke: currentColor; }
+.wiring .w-motor { stroke: #a855f7; }
 .wiring svg { display: block; width: 100%; max-width: 640px; height: auto; color: var(--text); }
 .wiring .w-box { fill: var(--surface); stroke: currentColor; stroke-width: 1.2; }
 .wiring .w-title { font-size: 13px; font-weight: 700; fill: currentColor; }

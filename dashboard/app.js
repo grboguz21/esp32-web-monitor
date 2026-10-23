@@ -1251,16 +1251,60 @@ function wiringSvg(motor) {
   </svg>`;
 }
 
+// Motor wiring: ESP32 -> L298N (ENA, IN1, IN2), L298N -> motor, encoder -> ESP32, adapter -> L298N
+const MOTOR_WIRING = {
+  1: { ena: 'D25', in1: 'D26', in2: 'D27', a: 'D34', b: 'D35' },
+  2: { ena: 'D18', in1: 'D19', in2: 'D23', a: 'D16', b: 'D17' },
+};
+
+function motorWiringSvg(m) {
+  const p = MOTOR_WIRING[m];
+  const pin = (x, y) => `<circle class="w-dot" cx="${x}" cy="${y}" r="3"/>`;
+  const wire = (cls, x1, y1, x2, y2) => `<line class="w-wire ${cls}" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"/>`;
+  const path = (cls, d) => `<path class="w-wire ${cls}" d="${d}"/>`;
+  const text = (x, y, label, anchor = 'start', cls = 'w-pin') => `<text class="${cls}" x="${x}" y="${y + 4}" text-anchor="${anchor}">${label}</text>`;
+  // ESP32 -> L298N control lines
+  const ctrl = [[p.ena, 'ENA', 70], [p.in1, 'IN1', 100], [p.in2, 'IN2', 130]].map(([esp, l298, y]) =>
+    wire('w-ctrl', 150, y, 290, y) + pin(150, y) + pin(290, y) + text(140, y, esp, 'end') + text(300, y, l298)).join('');
+  // Encoder -> ESP32, routed under the driver and the adapter
+  const enc = [[p.a, 'A', 250, 'w-yellow'], [p.b, 'B', 280, 'w-green'], ['3V3', 'VCC', 310, 'w-blue'], ['GND', 'GND', 340, 'w-black']]
+    .map(([esp, e, y, cls]) => wire(cls, 150, y, 570, y) + pin(150, y) + pin(570, y) + text(140, y, esp, 'end') + text(580, y, e)).join('');
+  return `<svg viewBox="0 0 720 360" role="img" aria-label="${t('wiringMotor', { m })}: ENA ${p.ena}, IN1 ${p.in1}, IN2 ${p.in2}, A ${p.a}, B ${p.b}">
+    <rect class="w-box" x="20" y="40" width="130" height="315" rx="8"/>
+    <text class="w-title" x="85" y="32" text-anchor="middle">ESP32</text>
+    <rect class="w-box" x="290" y="40" width="160" height="120" rx="8"/>
+    <text class="w-title" x="370" y="32" text-anchor="middle">${t('wiringL298', { m })}</text>
+    <rect class="w-box" x="570" y="40" width="130" height="315" rx="8"/>
+    <text class="w-title" x="635" y="32" text-anchor="middle">${t('wiringMotorBox')}</text>
+    ${ctrl}
+    ${wire('w-motor', 450, 85, 570, 85)}${pin(450, 85)}${pin(570, 85)}${text(440, 85, 'OUT1', 'end')}${text(580, 85, 'M+')}
+    ${wire('w-motor', 450, 115, 570, 115)}${pin(450, 115)}${pin(570, 115)}${text(440, 115, 'OUT2', 'end')}${text(580, 115, 'M−')}
+    ${text(635, 225, t('wiringEncoder'), 'middle', 'w-note')}
+    ${path('w-power', 'M335 160 V190')}${path('w-gnd', 'M405 160 V190')}
+    ${pin(335, 160)}${pin(405, 160)}
+    ${text(335, 148, '+12V', 'middle')}${text(405, 148, 'GND', 'middle')}
+    <rect class="w-box" x="300" y="190" width="140" height="30" rx="6"/>
+    ${text(370, 205, t('wiringAdapter'), 'middle')}
+    ${enc}
+  </svg>`;
+}
+
+function motorWiringHtml() {
+  return MOTORS.map((m) => `<h4>${t('wiringMotor', { m })}</h4>${motorWiringSvg(m)}`).join('')
+    + `<p class="w-notes">${t('wiringEnaNote')}<br>${t('wiringGndNote')}<br>${t('wiringEncNote')}</p>`;
+}
+
 function renderWiring() {
   document.querySelectorAll('[data-wiring]').forEach((b) => {
-    const box = b.closest('.power-hint').querySelector('.wiring');
-    b.textContent = t(box.hidden ? 'wiringShow' : 'wiringHide');
-    if (!box.hidden) box.innerHTML = wiringSvg(Number(b.dataset.wiring));
+    const box = b.parentElement.closest('.power-hint, .wiring-link').querySelector('.wiring');
+    const motors = b.dataset.wiring === 'motors';
+    b.textContent = t(motors ? (box.hidden ? 'wiringMotorsShow' : 'wiringMotorsHide') : (box.hidden ? 'wiringShow' : 'wiringHide'));
+    if (!box.hidden) box.innerHTML = motors ? motorWiringHtml() : wiringSvg(Number(b.dataset.wiring));
   });
 }
 
 document.querySelectorAll('[data-wiring]').forEach((b) => b.addEventListener('click', () => {
-  const box = b.closest('.power-hint').querySelector('.wiring');
+  const box = b.parentElement.closest('.power-hint, .wiring-link').querySelector('.wiring');
   box.hidden = !box.hidden;
   renderWiring();
 }));

@@ -158,6 +158,17 @@ class LiveChart {
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       const message = visible.length ? this.labels.empty() : this.labels.none();
+      // soft pill behind the message so it reads over the grid
+      const mw = ctx.measureText(message).width + 24;
+      const mh = 24;
+      const mx = pad.left + pw / 2 - mw / 2;
+      const my = pad.top + ph / 2 - mh / 2;
+      ctx.save();
+      ctx.fillStyle = token('--secondary-bg');
+      ctx.beginPath();
+      ctx.roundRect(mx, my, mw, mh, mh / 2);
+      ctx.fill();
+      ctx.restore();
       ctx.fillText(message, pad.left + pw / 2, pad.top + ph / 2);
       this.tip.hidden = true;
       return;
