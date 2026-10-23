@@ -84,6 +84,7 @@ const els = {
   mvFinalError: document.getElementById('mvFinalError'),
   mvFinalSub: document.getElementById('mvFinalSub'),
   mvChartTitle: document.getElementById('mvChartTitle'),
+  mvEstimate: document.getElementById('mvEstimate'),
   encCard: document.getElementById('encCard'),
   encBadge: document.getElementById('encBadge'),
   encChartTitle: document.getElementById('encChartTitle'),
@@ -239,6 +240,8 @@ const MV_STORAGE_KEY = 'esp32-dashboard-move';
 const DEFAULT_CPR = 186.2;
 let mv = null;        // { phase, target, pos, profileRpm, finalError }
 let mvMotor = null;   // motor of the last move started from this page
+let mvStartedAt = null;   // performance.now() when the last move was sent
+let mvTookMs = null;      // start to brake of the last move
 const mvChart = new LiveChart(document.getElementById('mvChart'), {
   series: [
     { key: 'pos', label: () => t('mvPosition'), short: () => t('mvPosition'), color: '--series-1' },
@@ -542,6 +545,10 @@ function handleLine(line) {
   if (type === 'MOVE' && fields.length === 5) {
     const [phase, target, pos, profileRpm, finalError] = fields.map(Number);
     mv = { phase, target, pos, profileRpm, finalError };
+    if (mvStartedAt !== null && (phase === 2 || phase === 3)) {
+      mvTookMs = performance.now() - mvStartedAt;
+      mvStartedAt = null;
+    }
     if (phase !== 0 && mvMotor) {
       mvChart.push('pos', mvFromCounts(pos));
       mvChart.push('target', mvFromCounts(target));
@@ -806,7 +813,42 @@ const mvDetail = (counts) => {
   return `${counts} · ${(turns * 360).toFixed(0)}° · ${mm.toFixed(0)} mm`;
 };
 
+// Same profile as the firmware: accelerate, cruise, decelerate (trapezoid, or a triangle
+// when the distance is too short to reach max speed). Ignores the 40 RPM final approach.
+function mvEstimate() {
+  const amount = Math.abs(Number(els.mvAmount.value) || 0);
+  const turns = els.mvUnit.value === 'm' ? amount / (Math.PI * mvWheelM()) : amount;
+  const maxRpm = Math.max(40, Math.min(1100, Number(els.mvMaxRpm.value) || 300));
+  const accel = Math.max(100, Math.min(20000, Number(els.mvAccel.value) || 1500));
+  const v = maxRpm / 60;    // rev/s
+  const a = accel / 60;     // rev/s^2
+  const rampTurns = (v * v) / (2 * a);
+  if (turns === 0) return null;
+  if (2 * rampTurns <= turns) {
+    return { turns, maxRpm, peakRpm: maxRpm, reachS: v / a, totalS: 2 * v / a + (turns - 2 * rampTurns) / v };
+  }
+  const peak = Math.sqrt(a * turns);
+  return { turns, maxRpm, peakRpm: peak * 60, reachS: peak / a, totalS: 2 * peak / a };
+}
+
+function renderMoveEstimate() {
+  const e = mvEstimate();
+  const parts = [];
+  if (e) {
+    const reached = e.peakRpm >= e.maxRpm - 0.5;
+    const fmt = (key, vars) => t(key, vars).replace(/(\d[\d.,]*)/g, '<b>$1</b>');
+    parts.push(reached
+      ? fmt('mvEstReach', { rpm: Math.round(e.peakRpm), s: e.reachS.toFixed(2) })
+      : fmt('mvEstPeak', { max: e.maxRpm, rpm: Math.round(e.peakRpm), s: e.reachS.toFixed(2) }));
+    parts.push(fmt('mvEstTotal', { s: e.totalS.toFixed(2) }));
+    parts.push(fmt('mvEstDistance', { turns: e.turns.toFixed(2) }));
+  }
+  if (mvTookMs !== null) parts.push(t('mvEstLast', { s: `<b>${(mvTookMs / 1000).toFixed(2)}</b>` }));
+  els.mvEstimate.innerHTML = parts.map((p) => `<span>${p}</span>`).join('');
+}
+
 function renderMove(state) {
+  renderMoveEstimate();
   const supported = state === 'online' && mv !== null;
   const moving = supported && testState === 1 && spd?.mode === 3;
   els.mvBadge.textContent = !supported ? t('sensorWaiting')
@@ -1069,6 +1111,8 @@ function startMove() {
   sendGains();
   mvChart.clear();
   mvSpeedChart.clear();
+  mvStartedAt = performance.now();
+  mvTookMs = null;
   if (port) send(`MOVE,${motor},${counts},${maxRpm},${accel}`);
   render();
 }

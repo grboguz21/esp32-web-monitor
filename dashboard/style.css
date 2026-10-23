@@ -881,3 +881,5 @@ h2[data-help] {
 @media (max-width: 900px) { .mv-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .mv-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 @media (max-width: 900px) { .mv-charts { grid-template-columns: 1fr; } }
+.mv-estimate { display: flex; flex-wrap: wrap; gap: 6px 20px; margin: 4px 0 10px; font-size: 13px; color: var(--text-secondary, inherit); }
+.mv-estimate b { color: var(--text, inherit); font-weight: 600; font-variant-numeric: tabular-nums; }
