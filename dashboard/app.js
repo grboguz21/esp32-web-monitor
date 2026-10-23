@@ -1370,6 +1370,54 @@ els.testPin.addEventListener('change', () => {
 // Tells the firmware the page is alive; without it the motor stops after 1 s
 setInterval(() => { if (port) send('PING'); }, 200);
 
+// INA219 wiring: drawn on demand, motor 2 adds the A0 bridge for address 0x41
+function wiringSvg(motor) {
+  const pins = [['3V3', 'VCC', 'w-power'], ['GND', 'GND', 'w-gnd'], ['D21', 'SDA', 'w-sda'], ['D22', 'SCL', 'w-scl']];
+  const y = (i) => 62 + i * 30;
+  const left = pins.map(([esp, ina, cls], i) => `
+    <line class="w-wire ${cls}" x1="150" y1="${y(i)}" x2="290" y2="${y(i)}"/>
+    <circle class="w-dot" cx="150" cy="${y(i)}" r="3"/><circle class="w-dot" cx="290" cy="${y(i)}" r="3"/>
+    <text class="w-pin" x="140" y="${y(i) + 4}" text-anchor="end">${esp}</text>
+    <text class="w-pin" x="300" y="${y(i) + 4}">${ina}</text>`).join('');
+  const lines = motor === 2
+    ? [t('wiringShared'), t('wiringA0'), t('wiringGnd')]
+    : [t('wiringAuto'), t('wiringGnd')];
+  const notes = lines.map((text, i) => `<text class="w-note" x="20" y="${206 + i * 18}">${text}</text>`).join('');
+  const height = 206 + lines.length * 18;
+  return `<svg viewBox="0 0 640 ${height}" role="img" aria-label="INA219 → ESP32: VCC 3V3, GND GND, SDA D21, SCL D22; VIN+ 12 V, VIN− L298N">
+    <rect class="w-box" x="20" y="30" width="130" height="150" rx="8"/>
+    <text class="w-title" x="85" y="22" text-anchor="middle">ESP32</text>
+    <rect class="w-box" x="290" y="30" width="150" height="150" rx="8"/>
+    <text class="w-title" x="365" y="22" text-anchor="middle">INA219${motor === 2 ? ' #2' : ''}</text>
+    ${left}
+    <text class="w-pin" x="430" y="86" text-anchor="end">VIN+</text>
+    <text class="w-pin" x="430" y="136" text-anchor="end">VIN−</text>
+    <line class="w-wire w-power" x1="440" y1="82" x2="520" y2="82"/>
+    <line class="w-wire w-power" x1="440" y1="132" x2="520" y2="132"/>
+    <circle class="w-dot" cx="440" cy="82" r="3"/><circle class="w-dot" cx="440" cy="132" r="3"/>
+    <rect class="w-box" x="520" y="64" width="115" height="36" rx="6"/>
+    <text class="w-pin" x="577" y="86" text-anchor="middle">${t('wiringSupply')}</text>
+    <rect class="w-box" x="520" y="114" width="115" height="36" rx="6"/>
+    <text class="w-pin" x="577" y="136" text-anchor="middle">${t('wiringDriver')}${motor === 2 ? ' #2' : ''}</text>
+    ${notes}
+  </svg>`;
+}
+
+function renderWiring() {
+  document.querySelectorAll('[data-wiring]').forEach((b) => {
+    const box = b.closest('.power-hint').querySelector('.wiring');
+    b.textContent = t(box.hidden ? 'wiringShow' : 'wiringHide');
+    if (!box.hidden) box.innerHTML = wiringSvg(Number(b.dataset.wiring));
+  });
+}
+
+document.querySelectorAll('[data-wiring]').forEach((b) => b.addEventListener('click', () => {
+  const box = b.closest('.power-hint').querySelector('.wiring');
+  box.hidden = !box.hidden;
+  renderWiring();
+}));
+renderWiring();
+
 document.querySelectorAll('[data-pfield="demo"]').forEach((b) => b.addEventListener('click', () => {
   if (demoTimer === null) startDemo();
   else stopDemo();
@@ -1446,6 +1494,7 @@ I18N.onChange(() => {
   encChart.renderLegend();
   spdChart.renderLegend();
   renderSpdMotors();
+  renderWiring();
   mvChart.renderLegend();
   mvSpeedChart.renderLegend();
   renderMoveMotors();

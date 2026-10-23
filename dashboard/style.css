@@ -359,9 +359,31 @@ select:disabled { opacity: 0.6; }
   padding: 10px 12px;
   border-radius: 8px;
   background: var(--secondary-bg);
-  color: var(--muted);
-  font-size: 0.78rem;
+  font-size: 0.85rem;
+  font-weight: 600;
 }
+.power-hint-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.link-btn {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent, #2a78d6);
+  font: inherit;
+  cursor: pointer;
+}
+.link-btn:hover { text-decoration: underline; }
+.wiring { margin-top: 10px; font-weight: 400; }
+.wiring svg { display: block; width: 100%; max-width: 640px; height: auto; color: var(--text); }
+.wiring .w-box { fill: var(--surface); stroke: currentColor; stroke-width: 1.2; }
+.wiring .w-title { font-size: 13px; font-weight: 700; fill: currentColor; }
+.wiring .w-pin { font-size: 11.5px; fill: currentColor; }
+.wiring .w-note { font-size: 11.5px; fill: var(--muted); }
+.wiring .w-wire { fill: none; stroke-width: 2.5; stroke-linecap: round; }
+.wiring .w-power { stroke: #ef4444; }
+.wiring .w-gnd { stroke: var(--muted); }
+.wiring .w-sda { stroke: #2a78d6; }
+.wiring .w-scl { stroke: #eb6834; }
+.wiring .w-dot { fill: currentColor; }
 
 .tiles {
   display: grid;
