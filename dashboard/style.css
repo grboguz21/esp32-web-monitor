@@ -925,6 +925,8 @@ h2[data-help] {
 /* Encoder */
 .enc-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 10px; }
 .enc-actions .ks-supply { margin-left: auto; }
+.health-tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 900px) { .health-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .enc-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .enc-invert { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-sm); color: var(--muted); cursor: pointer; }
 .enc-card .motor-row + .motor-row { margin-top: 18px; }

@@ -37,6 +37,9 @@ const els = {
   hStack: document.getElementById('hStack'),
   hStackBar: document.getElementById('hStackBar'),
   hStackSub: document.getElementById('hStackSub'),
+  hBatt: document.getElementById('hBatt'),
+  hBattBar: document.getElementById('hBattBar'),
+  hBattSub: document.getElementById('hBattSub'),
   hLoopBar: document.getElementById('hLoopBar'),
   powerCards: document.querySelectorAll('.power'),
   testCard: document.getElementById('testCard'),
@@ -123,6 +126,11 @@ let readableClosed = null;
 let device = null;      // { name, version }
 let info = null;        // chip info and reset reason, from INFO
 let health = null;      // latest HEALTH values
+let battery = null;     // { volts, measured } from BATT
+// 3S Li-ion: 12.6 V full, warn below 10.2 V, critical below 9.6 V
+const BATT_FULL_V = 12.6;
+const BATT_EMPTY_V = 9.6;
+const BATT_LOW_V = 10.2;
 // Power data per motor (1 and 2), one INA219 each
 const MOTORS = [1, 2];
 const newMotorPower = () => ({
@@ -389,6 +397,7 @@ async function closePort() {
   resetTestData();
   resetEncData();
   spd = null;
+  battery = null;
   spdChart.clear();
   mv = null;
   mvChart.clear();
@@ -452,6 +461,11 @@ function handleLine(line) {
     };
     const [label, level] = resetReason(info.resetReason);
     if (level === 'bad') log(t('log.resetWarn', { reason: label }));
+    return;
+  }
+
+  if (type === 'BATT' && fields.length === 2) {
+    battery = { volts: Number(fields[0]), measured: fields[1] === '1' };
     return;
   }
 
@@ -628,6 +642,7 @@ function renderHealth(state) {
     for (const el of [els.hFree, els.hLoopAvg, els.hStack]) el.textContent = '—';
     for (const el of [els.hFreeSub, els.hLoopMax, els.hStackSub]) el.textContent = '';
     for (const bar of [els.hFreeBar, els.hLoopBar, els.hStackBar]) setMeter(bar, null);
+    renderBattery();
     return;
   }
 
@@ -652,6 +667,31 @@ function renderHealth(state) {
   els.hStack.classList.toggle('warn', health.stackFree < STACK_WARN_BYTES);
   els.hStackSub.textContent = t('heapOf', { pct: Math.round(stackRatio * 100), total: formatBytes(LOOP_STACK_BYTES) });
   setMeter(els.hStackBar, stackRatio);
+  renderBattery();
+}
+
+// Battery: the bar shows the charge left, so it goes red as the pack empties
+function renderBattery() {
+  const b = battery;
+  if (!b) {
+    els.hBatt.textContent = '—';
+    els.hBattSub.textContent = '';
+    els.hBatt.classList.remove('warn');
+    setMeter(els.hBattBar, null);
+    return;
+  }
+  els.hBatt.textContent = `${num(b.volts, 2)} V`;
+  if (!b.measured) {
+    els.hBattSub.textContent = t('battAssumed');
+    els.hBatt.classList.remove('warn');
+    setMeter(els.hBattBar, null);
+    return;
+  }
+  const charge = Math.min(1, Math.max(0, (b.volts - BATT_EMPTY_V) / (BATT_FULL_V - BATT_EMPTY_V)));
+  setMeter(els.hBattBar, charge);
+  els.hBattBar.style.background = meterColor(1 - charge);
+  els.hBatt.classList.toggle('warn', b.volts < BATT_LOW_V);
+  els.hBattSub.textContent = t(b.volts < BATT_EMPTY_V ? 'battCritical' : b.volts < BATT_LOW_V ? 'battLow' : 'battComp');
 }
 
 function formatCurrent(ma) {

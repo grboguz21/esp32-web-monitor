@@ -113,6 +113,13 @@ anti-windup:  don't integrate while |V| > 12 V and the error pushes further out
 The integral resets when the motor, mode or direction changes; the reference starts from the
 measured speed.
 
+**Battery compensation (firmware 0.20.0).** The controller works in volts and divides by the
+supply voltage to get the duty. With an INA219 on the supply line it uses that reading
+(low-passed, 0.2 s); without one it assumes 12 V, which is what everything here was measured
+at. The gains do not change. What the battery does change is the top speed: the L298N drops
+about 2 V, so a 3S pack at 10.5 V leaves roughly 8.5 V for the motor (about 850 RPM at full
+duty). Keep targets under about 700 RPM so the controller has room on a low pack.
+
 PI gains from SIMC with K = 100 RPM/V, tau = 0.125 s, theta = 0.015 s:
 `Kp = tau / (K (tau_c + theta))`, `Ti = min(tau, 4 (tau_c + theta))`, `Ki = Kp / Ti`
 

@@ -83,7 +83,7 @@
           <div class="card-head">
             <h2 data-i18n="health">System health</h2>
           </div>
-          <div class="tiles">
+          <div class="tiles health-tiles">
             <div class="tile">
               <div class="tile-label" data-help="freeHeap"><span data-i18n="freeHeap">Free heap</span></div>
               <div class="tile-value" id="hFree">—</div>
@@ -101,6 +101,12 @@
               <div class="tile-value" id="hStack">—</div>
               <div class="meter"><span id="hStackBar"></span></div>
               <div class="tile-sub" id="hStackSub"></div>
+            </div>
+            <div class="tile">
+              <div class="tile-label" data-help="battery"><span data-i18n="battery">Battery</span></div>
+              <div class="tile-value" id="hBatt">—</div>
+              <div class="meter"><span id="hBattBar"></span></div>
+              <div class="tile-sub" id="hBattSub"></div>
             </div>
           </div>
         </section>

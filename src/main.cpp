@@ -56,8 +56,16 @@ constexpr uint32_t SPEED_WINDOW_MS = 50;      // encoder speed = count change ov
 constexpr size_t LOG_QUEUE_LENGTH = 256;      // 1.28 s of ticks buffered between the cores
 
 // Speed control (200 Hz on core 1): feedforward from the measured steady-state curve plus
-// a PI on the speed error, with clamping anti-windup. Volts are duty x SUPPLY_V.
+// a PI on the speed error, with clamping anti-windup. The controller works in volts; duty is
+// volts / the supply voltage, measured by the first INA219 found (battery compensation) or
+// SUPPLY_V when there is none. The feedforward curve was measured at FF_TABLE_V.
 constexpr float SUPPLY_V = 12.0f;
+constexpr float FF_TABLE_V = 12.0f;
+constexpr float SUPPLY_FILTER_S = 0.2f;        // smooths the measured supply a little
+constexpr float SUPPLY_MIN_V = 6.0f;           // outside this range the reading is not trusted
+constexpr float SUPPLY_MAX_V = 14.0f;
+constexpr uint32_t SUPPLY_STALE_MS = 500;      // no fresh reading: fall back to SUPPLY_V
+constexpr uint32_t BATTERY_REPORT_MS = 500;
 constexpr float DEFAULT_CPR = 186.2f;          // measured on motor 1 (counts per output rev)
 constexpr size_t SPEED_TAPS = 4;               // controller speed: backward difference over 20 ms
 constexpr float DEFAULT_KP = 0.0417f;          // V per RPM (SIMC, tau_c = theta = 15 ms)
@@ -101,7 +109,7 @@ constexpr int32_t MOVE_TOLERANCE_COUNTS = 2;   // close enough: start braking
 constexpr uint32_t MOVE_BRAKE_MS = 300;        // both inputs low (short-circuit brake), then coast
 enum class MovePhase : uint8_t { Idle = 0, Moving = 1, Braking = 2, Done = 3, Aborted = 4 };
 
-constexpr const char* FIRMWARE_VERSION = "0.19.0";
+constexpr const char* FIRMWARE_VERSION = "0.20.0";
 
 // Protocol (one message per line):
 //   ESP32 -> PC : HB,<uptime_ms>               heartbeat
@@ -121,6 +129,7 @@ constexpr const char* FIRMWARE_VERSION = "0.19.0";
 //                 (motor 4 = both, from DUTY)
 //                 DUTYOUT,<duty1>,<duty2>      duty driven on each motor right now (any mode)
 //                 SPD,<mode>,<target_rpm>,<ref_rpm>,<speed_rpm>,<ff_duty>,<pi_duty>
+//                 BATT,<supply_V>,<measured 0|1>  supply the controller uses (0: SUPPLY_V assumed)
 //                 MOVE,<phase>,<target_counts>,<position_counts>,<profile_rpm>,<final_error_counts>
 //                 (phase 0 idle, 1 moving, 2 braking, 3 done, 4 aborted; position from the start)
 //                 (speed control of the running motor; mode 0 open loop, 1 FF, 2 FF + PI)
@@ -186,6 +195,8 @@ float gainKp = DEFAULT_KP;
 float gainKi = DEFAULT_KI;
 float refTauS = DEFAULT_TAU_REF_S;
 float gainKa = DEFAULT_KA;
+float measuredSupplyV = SUPPLY_V;   // filtered INA219 bus voltage, written on core 0
+uint32_t supplyMeasuredMs = 0;      // millis() of the last good reading, 0 = never
 float motorCpr[MOTOR_COUNT] = {DEFAULT_CPR, DEFAULT_CPR};
 
 struct ControlStatus {
@@ -486,6 +497,33 @@ bool i2cDevicePresent(uint8_t address) {
   return Wire.endTransmission() == 0;
 }
 
+PowerChannel* firstReadyChannel() {
+  for (PowerChannel& ch : powerChannels) if (ch.ready) return &ch;
+  return nullptr;
+}
+
+// Battery compensation: low-pass the supply voltage for the speed loop on core 1
+void updateSupply(float voltage, uint32_t now) {
+  constexpr float alpha = (POWER_SAMPLE_MS / 1000.0f) / (SUPPLY_FILTER_S + POWER_SAMPLE_MS / 1000.0f);
+  portENTER_CRITICAL(&runMux);
+  bool fresh = supplyMeasuredMs != 0 && now - supplyMeasuredMs < SUPPLY_STALE_MS;
+  measuredSupplyV = fresh ? measuredSupplyV + alpha * (voltage - measuredSupplyV) : voltage;
+  supplyMeasuredMs = now;
+  portEXIT_CRITICAL(&runMux);
+}
+
+void sendBattery() {
+  static uint32_t last = 0;
+  uint32_t now = millis();
+  if (now - last < BATTERY_REPORT_MS) return;
+  last = now;
+  portENTER_CRITICAL(&runMux);
+  bool fresh = supplyMeasuredMs != 0 && now - supplyMeasuredMs < SUPPLY_STALE_MS;
+  float v = fresh ? measuredSupplyV : SUPPLY_V;
+  portEXIT_CRITICAL(&runMux);
+  Serial.printf("BATT,%.2f,%d\n", v, fresh ? 1 : 0);
+}
+
 // Looks for each sensor every SENSOR_PROBE_MS until found, then samples it
 void samplePower() {
   static uint32_t lastSample = 0;
@@ -508,6 +546,9 @@ void samplePower() {
 
     float voltage = ch.sensor.getBusVoltage_V();   // measured at Vin-, i.e. what the motor sees
     float currentMa = ch.sensor.getCurrent_mA();
+    if (&ch == firstReadyChannel() && voltage >= SUPPLY_MIN_V && voltage <= SUPPLY_MAX_V) {
+      updateSupply(voltage, now);
+    }
     PowerWindow& w = ch.window;
     if (w.count == 0) {
       w.minVoltage = voltage;
@@ -611,6 +652,7 @@ void telemetryTask(void*) {
     sendHealth();
     samplePower();
     sendPower();
+    sendBattery();
     sendMotorRun();
     sendLog();
     vTaskDelay(pdMS_TO_TICKS(TELEMETRY_PERIOD_MS));
@@ -683,6 +725,7 @@ struct Gains {
   float ki;
   float ka;
   float tauRefS;
+  float supplyV;   // volts -> duty
 };
 
 // Speed modes: returns the duty (%) and fills the reference and FF / PI split for reporting
@@ -739,9 +782,9 @@ float speedControl(PiState& pi, const MotorRun& run, float speedRpm, const Gains
     pi.refRpm += refRate * dt;
   }
 
-  float ffV = feedforwardDuty(pi.refRpm) / 100.0f * SUPPLY_V + g.ka * refRate;
-  ffV = constrain(ffV, -SUPPLY_V, SUPPLY_V);
-  ffDuty = ffV / SUPPLY_V * 100.0f;
+  float ffV = feedforwardDuty(pi.refRpm) / 100.0f * FF_TABLE_V + g.ka * refRate;
+  ffV = constrain(ffV, -g.supplyV, g.supplyV);
+  ffDuty = ffV / g.supplyV * 100.0f;
   if (run.mode != RunMode::FeedforwardPi) return ffDuty;
 
   float error = pi.refRpm - speedRpm;
@@ -749,11 +792,11 @@ float speedControl(PiState& pi, const MotorRun& run, float speedRpm, const Gains
   float candidate = pi.integralV + g.ki * error * dt;
   float uCandidate = ffV + pV + candidate;
   // Clamping: integrate unless the output is saturated and the error pushes it further
-  bool saturated = fabsf(uCandidate) > SUPPLY_V;
+  bool saturated = fabsf(uCandidate) > g.supplyV;
   if (!saturated || (uCandidate > 0) != (error > 0)) pi.integralV = candidate;
-  float u = constrain(ffV + pV + pi.integralV, -SUPPLY_V, SUPPLY_V);
-  piDuty = (u - ffV) / SUPPLY_V * 100.0f;
-  return u / SUPPLY_V * 100.0f;
+  float u = constrain(ffV + pV + pi.integralV, -g.supplyV, g.supplyV);
+  piDuty = (u - ffV) / g.supplyV * 100.0f;
+  return u / g.supplyV * 100.0f;
 }
 
 struct MoveRuntime {
@@ -851,7 +894,8 @@ void runMotors() {
   }
   MotorRun run = motorRun;
   bool running = runState == RunState::Running;
-  Gains gains = {gainKp, gainKi, gainKa, refTauS};
+  bool supplyFresh = supplyMeasuredMs != 0 && now - supplyMeasuredMs < SUPPLY_STALE_MS;
+  Gains gains = {gainKp, gainKi, gainKa, refTauS, supplyFresh ? measuredSupplyV : SUPPLY_V};
   portEXIT_CRITICAL(&runMux);
 
   // Measure first, then decide this tick's duty
