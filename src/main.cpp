@@ -69,7 +69,9 @@ constexpr float DEFAULT_KA = 0.00125f;         // V per RPM/s (tau / K from the 
 // Breakaway: while the motor is stuck, the reference waits, the PI is off and a kick
 // starting at the measured start threshold rises until the motor moves. Without this the
 // integral builds up during the stall and the motor lurches past the target once free.
-constexpr float STUCK_RPM = 30.0f;             // below this the motor counts as not moving
+constexpr float STUCK_RPM = 30.0f;             // breaking free: moving at least this fast
+constexpr float STILL_RPM = 8.0f;              // half a count per speed window: not turning
+constexpr uint32_t STILL_MS = 40;              // not turning this long while running: stuck again
 constexpr float KICK_START_PLUS = 19.7f;       // % start thresholds measured on motor 1
 constexpr float KICK_START_MINUS = 20.8f;
 constexpr float KICK_RATE = 40.0f;             // % per second added while still stuck
@@ -89,9 +91,16 @@ constexpr FfPoint FF_MINUS[] = {
   {268.0, 25}, {331.2, 30}, {453.6, 40}, {574.4, 50}, {689.9, 60}, {905.8, 80}, {1127.0, 100},
 };
 
-enum class RunMode : uint8_t { OpenLoop = 0, Feedforward = 1, FeedforwardPi = 2 };
+enum class RunMode : uint8_t { OpenLoop = 0, Feedforward = 1, FeedforwardPi = 2, Move = 3 };
 
-constexpr const char* FIRMWARE_VERSION = "0.17.0";
+// Move: drive a set number of encoder counts with a trapezoidal speed profile (accelerate,
+// cruise, decelerate so it can stop in the distance left), run by the speed loop, then brake
+constexpr float MOVE_MIN_RPM = 40.0f;          // final approach speed, above the stuck limit
+constexpr int32_t MOVE_TOLERANCE_COUNTS = 2;   // close enough: start braking
+constexpr uint32_t MOVE_BRAKE_MS = 300;        // both inputs low (short-circuit brake), then coast
+enum class MovePhase : uint8_t { Idle = 0, Moving = 1, Braking = 2, Done = 3, Aborted = 4 };
+
+constexpr const char* FIRMWARE_VERSION = "0.18.1";
 
 // Protocol (one message per line):
 //   ESP32 -> PC : HB,<uptime_ms>               heartbeat
@@ -109,6 +118,8 @@ constexpr const char* FIRMWARE_VERSION = "0.17.0";
 //                 (encoder counts and counts per second; the sign follows the + direction
 //                  once ENCINV has been set to match)
 //                 SPD,<mode>,<target_rpm>,<ref_rpm>,<speed_rpm>,<ff_duty>,<pi_duty>
+//                 MOVE,<phase>,<target_counts>,<position_counts>,<profile_rpm>,<final_error_counts>
+//                 (phase 0 idle, 1 moving, 2 braking, 3 done, 4 aborted; position from the start)
 //                 (speed control of the running motor; mode 0 open loop, 1 FF, 2 FF + PI)
 //                 L,<t_us>,<duty>,<count1>,<count2>,<target_rpm>,<ref_rpm>,<speed_rpm>
 //                 (one line per 200 Hz control tick while logging is on; t_us is micros()
@@ -127,6 +138,8 @@ constexpr const char* FIRMWARE_VERSION = "0.17.0";
 //                 GAIN,<kp>,<ki>               PI gains in V/RPM and V/(RPM*s)
 //                 CPR,<motor>,<counts>         counts per output revolution for RPM
 //                 REF,<tau_ms>,<ka>            reference time constant and kA (V per RPM/s)
+//                 MOVE,<motor>,<counts>,<max_rpm>,<accel_rpm_per_s>
+//                                              turn a set distance (signed counts) and brake
 
 struct LoopStats {
   uint32_t lastStartUs = 0;
@@ -148,6 +161,10 @@ struct MotorRun {
   RunMode mode = RunMode::OpenLoop;
   float duty = 0;             // -100..100 %, open loop
   float targetRpm = 0;        // speed modes
+  int32_t moveCounts = 0;     // move mode: signed distance
+  float moveMaxRpm = 0;
+  float moveAccel = 0;        // RPM per second
+  uint32_t moveSeq = 0;       // bumped by every MOVE so loop() notices a new one
   uint32_t durationMs = 0;    // 0 = until STOP
   uint32_t startMs = 0;
 };
@@ -171,6 +188,16 @@ struct ControlStatus {
   float piDuty = 0;
 };
 ControlStatus controlStatus;   // for the running motor
+
+struct MoveStatus {
+  MovePhase phase = MovePhase::Idle;
+  int32_t targetCounts = 0;
+  int32_t positionCounts = 0;
+  float profileRpm = 0;
+  int32_t finalErrorCounts = 0;
+};
+MoveStatus moveStatus;
+uint32_t moveSeqCounter = 0;
 
 struct EncoderStatus {
   int64_t count = 0;
@@ -281,6 +308,28 @@ void handleCommand(const String& cmd) {
     if (sscanf(cmd.c_str(), "ENCINV,%u,%u", &motor, &invert) == 2 && motor >= 1 && motor <= MOTOR_COUNT) {
       portENTER_CRITICAL(&runMux);
       encoderInvert[motor - 1] = invert != 0;
+      portEXIT_CRITICAL(&runMux);
+    }
+  } else if (cmd.startsWith("MOVE,")) {
+    unsigned motor;
+    long counts;
+    float maxRpm, accel;
+    if (sscanf(cmd.c_str(), "MOVE,%u,%ld,%f,%f", &motor, &counts, &maxRpm, &accel) == 4 &&
+        motor >= 1 && motor <= MOTOR_COUNT && counts != 0 && maxRpm >= MOVE_MIN_RPM &&
+        maxRpm <= 1200 && accel >= 100 && accel <= 20000) {
+      portENTER_CRITICAL(&runMux);
+      motorRun.motor = motor - 1;
+      motorRun.mode = RunMode::Move;
+      motorRun.targetRpm = 0;
+      motorRun.duty = 0;
+      motorRun.moveCounts = counts;
+      motorRun.moveMaxRpm = maxRpm;
+      motorRun.moveAccel = accel;
+      motorRun.moveSeq = ++moveSeqCounter;
+      motorRun.durationMs = 0;
+      motorRun.startMs = millis();
+      lastPingMs = millis();
+      runState = RunState::Running;
       portEXIT_CRITICAL(&runMux);
     }
   } else if (cmd.startsWith("SPEED,")) {
@@ -507,6 +556,12 @@ void sendMotorRun() {
   portEXIT_CRITICAL(&runMux);
   Serial.printf("SPD,%u,%.1f,%.1f,%.1f,%.1f,%.1f\n", (unsigned)run.mode, run.targetRpm, ctl.refRpm,
                 ctl.speedRpm, ctl.ffDuty, ctl.piDuty);
+
+  portENTER_CRITICAL(&runMux);
+  MoveStatus mv = moveStatus;
+  portEXIT_CRITICAL(&runMux);
+  Serial.printf("MOVE,%u,%ld,%ld,%.1f,%ld\n", (unsigned)mv.phase, (long)mv.targetCounts,
+                (long)mv.positionCounts, mv.profileRpm, (long)mv.finalErrorCounts);
 }
 
 void sendLog() {
@@ -589,6 +644,8 @@ struct PiState {
   float integralV = 0;
   float refRpm = 0;
   float kickDuty = 0;   // breakaway kick while stuck, 0 once moving
+  bool stuck = false;
+  uint32_t stillMs = 0;  // how long it has not turned in the target's direction
   float lastTargetRpm = 0;
   RunMode lastMode = RunMode::OpenLoop;
   int lastMotor = -1;
@@ -602,8 +659,9 @@ struct Gains {
 };
 
 // Speed modes: returns the duty (%) and fills the reference and FF / PI split for reporting
+// directRef: the move profile supplies the reference and its rate, skipping the filter
 float speedControl(PiState& pi, const MotorRun& run, float speedRpm, const Gains& g,
-                   float& ffDuty, float& piDuty) {
+                   float& ffDuty, float& piDuty, bool directRef = false, float directRate = 0) {
   constexpr float dt = CONTROL_PERIOD_US / 1e6f;
   bool restart = run.motor != pi.lastMotor || run.mode != pi.lastMode || pi.lastTargetRpm == 0;
   if (restart) {
@@ -625,10 +683,16 @@ float speedControl(PiState& pi, const MotorRun& run, float speedRpm, const Gains
   }
 
   // Stuck: hold the reference at the motor, keep the integral empty and push with a rising
-  // kick until it breaks free. A target slower than STUCK_RPM uses half of it as the limit.
-  float stuckLimit = fminf(STUCK_RPM, fabsf(run.targetRpm) / 2);
-  bool movingWithTarget = speedRpm * run.targetRpm > 0 && fabsf(speedRpm) >= stuckLimit;
-  if (!movingWithTarget) {
+  // kick until it breaks free. With hysteresis, because at low speed the estimate jumps in
+  // 16 RPM steps: free once faster than STUCK_RPM (half the target if that is slower),
+  // stuck again only after STILL_MS without turning the target's way.
+  float freeLimit = fminf(STUCK_RPM, fabsf(run.targetRpm) / 2);
+  float along = run.targetRpm > 0 ? speedRpm : -speedRpm;
+  pi.stillMs = along < STILL_RPM ? pi.stillMs + CONTROL_PERIOD_US / 1000 : 0;
+  if (restart) pi.stuck = along < freeLimit;
+  else if (pi.stuck && along >= freeLimit) pi.stuck = false;
+  else if (!pi.stuck && pi.stillMs >= STILL_MS) pi.stuck = true;
+  if (pi.stuck) {
     float start = run.targetRpm > 0 ? KICK_START_PLUS : KICK_START_MINUS;
     pi.kickDuty = pi.kickDuty == 0 ? start : fminf(pi.kickDuty + KICK_RATE * dt, KICK_MAX);
     pi.refRpm = speedRpm;
@@ -638,9 +702,15 @@ float speedControl(PiState& pi, const MotorRun& run, float speedRpm, const Gains
   }
   pi.kickDuty = 0;
 
-  // Reference: first-order approach to the target
-  float refRate = (run.targetRpm - pi.refRpm) / g.tauRefS;   // RPM/s
-  pi.refRpm += refRate * dt;
+  // Reference: first-order approach to the target, or the move profile itself
+  float refRate;
+  if (directRef) {
+    refRate = directRate;
+    pi.refRpm = run.targetRpm;
+  } else {
+    refRate = (run.targetRpm - pi.refRpm) / g.tauRefS;   // RPM/s
+    pi.refRpm += refRate * dt;
+  }
 
   float ffV = feedforwardDuty(pi.refRpm) / 100.0f * SUPPLY_V + g.ka * refRate;
   ffV = constrain(ffV, -SUPPLY_V, SUPPLY_V);
@@ -659,6 +729,75 @@ float speedControl(PiState& pi, const MotorRun& run, float speedRpm, const Gains
   return u / SUPPLY_V * 100.0f;
 }
 
+struct MoveRuntime {
+  uint32_t seq = 0;
+  MovePhase phase = MovePhase::Idle;
+  int64_t startCount = 0;
+  int32_t targetCounts = 0;
+  int32_t positionCounts = 0;
+  float profileRpm = 0;          // unsigned profile speed
+  int32_t finalErrorCounts = 0;
+  uint32_t brakeUntilMs = 0;
+};
+
+// One tick of a move: profile speed -> speed loop, then brake once within tolerance.
+// Returns the duty; outputs the signed profile speed for the log.
+float runMove(MoveRuntime& mv, const MotorRun& run, PiState& pi, float speedRpm, const Gains& g,
+              uint32_t now, float& ffDuty, float& piDuty, float& profileSigned) {
+  constexpr float dt = CONTROL_PERIOD_US / 1e6f;
+  portENTER_CRITICAL(&runMux);
+  int64_t count = encoderStatus[run.motor].count;
+  float cpr = motorCpr[run.motor];
+  portEXIT_CRITICAL(&runMux);
+
+  if (run.moveSeq != mv.seq) {   // a new MOVE: measure from here
+    mv = MoveRuntime();
+    mv.seq = run.moveSeq;
+    mv.startCount = count;
+    mv.targetCounts = run.moveCounts;
+    mv.phase = MovePhase::Moving;
+    pi = PiState();
+  }
+  mv.positionCounts = (int32_t)(count - mv.startCount);
+  int32_t remaining = mv.targetCounts - mv.positionCounts;
+  float dir = mv.targetCounts > 0 ? 1.0f : -1.0f;
+  ffDuty = 0;
+  piDuty = 0;
+  profileSigned = 0;
+
+  if (mv.phase == MovePhase::Moving) {
+    bool arrived = abs(remaining) <= MOVE_TOLERANCE_COUNTS || remaining * dir < 0;
+    if (arrived) {
+      mv.phase = MovePhase::Braking;
+      mv.brakeUntilMs = now + MOVE_BRAKE_MS;
+      mv.profileRpm = 0;
+    } else {
+      // Fastest speed that can still stop in the distance left: v^2 = 2 a d
+      float remainingRev = fabsf((float)remaining) / cpr;
+      float stopRpm = sqrtf(2.0f * run.moveAccel * remainingRev * 60.0f);
+      float wanted = fmaxf(MOVE_MIN_RPM, fminf(run.moveMaxRpm, stopRpm));
+      float previous = mv.profileRpm;
+      mv.profileRpm = wanted > previous ? fminf(wanted, previous + run.moveAccel * dt) : wanted;
+      profileSigned = dir * mv.profileRpm;
+      MotorRun speedRun = run;
+      speedRun.mode = RunMode::FeedforwardPi;
+      speedRun.targetRpm = profileSigned;
+      float rate = dir * (mv.profileRpm - previous) / dt;
+      return speedControl(pi, speedRun, speedRpm, g, ffDuty, piDuty, true, rate);
+    }
+  }
+  if (mv.phase == MovePhase::Braking) {
+    mv.finalErrorCounts = mv.targetCounts - mv.positionCounts;   // keeps updating while it stops
+    if ((int32_t)(now - mv.brakeUntilMs) >= 0) {
+      mv.phase = MovePhase::Done;
+      portENTER_CRITICAL(&runMux);
+      if (runState == RunState::Running && motorRun.moveSeq == mv.seq) runState = RunState::Done;
+      portEXIT_CRITICAL(&runMux);
+    }
+  }
+  return 0;   // braking: duty 0 with ENA high shorts the motor through the low side
+}
+
 void readEncoders(uint32_t now, float (&speedRpm)[MOTOR_COUNT]);
 
 void runMotors() {
@@ -666,6 +805,7 @@ void runMotors() {
   // not after it actually ran, so the rate does not drift
   static uint32_t nextTickUs = 0;
   static PiState pi;
+  static MoveRuntime mv;
   uint32_t tickUs = micros();
   if (nextTickUs != 0 && (int32_t)(tickUs - nextTickUs) < 0) return;
   if (nextTickUs == 0 || (int32_t)(tickUs - nextTickUs) > (int32_t)CONTROL_PERIOD_US) {
@@ -693,13 +833,20 @@ void runMotors() {
 
   float duty = 0, ffDuty = 0, piDuty = 0;
   bool motorActive = running && run.motor < (int)MOTOR_COUNT;
-  if (motorActive) {
+  float moveTargetRpm = 0;
+  if (motorActive && run.mode == RunMode::Move) {
+    duty = runMove(mv, run, pi, speedRpm[run.motor], gains, now, ffDuty, piDuty, moveTargetRpm);
+  } else if (motorActive) {
     duty = run.mode == RunMode::OpenLoop
         ? run.duty
         : speedControl(pi, run, speedRpm[run.motor], gains, ffDuty, piDuty);
   } else {
     pi = PiState();
+    if (mv.phase == MovePhase::Moving || mv.phase == MovePhase::Braking) mv.phase = MovePhase::Aborted;
   }
+  portENTER_CRITICAL(&runMux);
+  moveStatus = {mv.phase, mv.targetCounts, mv.positionCounts, mv.profileRpm, mv.finalErrorCounts};
+  portEXIT_CRITICAL(&runMux);
   for (size_t i = 0; i < MOTOR_COUNT; i++) {
     bool active = motorActive && i == (size_t)run.motor;
     applyDuty(i, active ? duty : 0, active);
@@ -721,7 +868,7 @@ void runMotors() {
     e.duty = outputDuty;
     for (size_t i = 0; i < MOTOR_COUNT; i++) e.count[i] = (int32_t)encoderStatus[i].count;
     portEXIT_CRITICAL(&runMux);
-    e.targetRpm = run.mode == RunMode::OpenLoop ? 0 : run.targetRpm;
+    e.targetRpm = run.mode == RunMode::OpenLoop ? 0 : run.mode == RunMode::Move ? moveTargetRpm : run.targetRpm;
     e.refRpm = run.mode == RunMode::OpenLoop ? 0 : pi.refRpm;
     e.speedRpm = shownSpeed;
     xQueueSend(logQueue, &e, 0);   // never block the control loop; drop if the queue is full

@@ -66,6 +66,24 @@ const els = {
   spdErrorNow: document.getElementById('spdErrorNow'),
   spdDutyNow: document.getElementById('spdDutyNow'),
   spdDutySplit: document.getElementById('spdDutySplit'),
+  mvBadge: document.getElementById('mvBadge'),
+  mvMotor: document.getElementById('mvMotor'),
+  mvUnit: document.getElementById('mvUnit'),
+  mvAmount: document.getElementById('mvAmount'),
+  mvWheel: document.getElementById('mvWheel'),
+  mvMaxRpm: document.getElementById('mvMaxRpm'),
+  mvAccel: document.getElementById('mvAccel'),
+  mvStartBtn: document.getElementById('mvStartBtn'),
+  mvStopBtn: document.getElementById('mvStopBtn'),
+  mvTargetNow: document.getElementById('mvTargetNow'),
+  mvTargetSub: document.getElementById('mvTargetSub'),
+  mvTraveled: document.getElementById('mvTraveled'),
+  mvTraveledSub: document.getElementById('mvTraveledSub'),
+  mvRemaining: document.getElementById('mvRemaining'),
+  mvProfile: document.getElementById('mvProfile'),
+  mvFinalError: document.getElementById('mvFinalError'),
+  mvFinalSub: document.getElementById('mvFinalSub'),
+  mvChartTitle: document.getElementById('mvChartTitle'),
   encCard: document.getElementById('encCard'),
   encBadge: document.getElementById('encBadge'),
   encChartTitle: document.getElementById('encChartTitle'),
@@ -214,7 +232,24 @@ const spdChart = new LiveChart(document.getElementById('spdChart'), {
   windowMs: 20000,
   labels: chartLabels,
 });
-const spdRunning = () => testState === 1 && spd?.mode > 0 && testOutput?.motor === Number(els.spdMotor.value);
+const spdRunning = () => testState === 1 && (spd?.mode === 1 || spd?.mode === 2) && testOutput?.motor === Number(els.spdMotor.value);
+
+// Distance test: the firmware's MOVE report (counts from where the move started)
+const MV_STORAGE_KEY = 'esp32-dashboard-move';
+const DEFAULT_CPR = 186.2;
+let mv = null;        // { phase, target, pos, profileRpm, finalError }
+let mvMotor = null;   // motor of the last move started from this page
+const mvChart = new LiveChart(document.getElementById('mvChart'), {
+  series: [
+    { key: 'pos', label: () => t('mvPosition'), short: () => t('mvPosition'), color: '--series-1' },
+    { key: 'target', label: () => t('mvTargetNow'), short: () => t('mvTargetNow'), color: '--series-2' },
+  ],
+  legend: document.getElementById('mvLegend'),
+  format: (v) => (els.mvUnit.value === 'm' ? `${v.toFixed(2)} m` : `${v.toFixed(2)}`),
+  minSpan: 0.5,
+  windowMs: 20000,
+  labels: chartLabels,
+});
 
 function saveEnc() {
   try { localStorage.setItem(ENC_STORAGE_KEY, JSON.stringify(encSettings)); } catch { /* storage unavailable */ }
@@ -388,6 +423,8 @@ async function closePort() {
   resetEncData();
   spd = null;
   spdChart.clear();
+  mv = null;
+  mvChart.clear();
   uptimeMs = null;
   lastBeatAt = 0;
   log(t('log.closed'));
@@ -483,10 +520,20 @@ function handleLine(line) {
   if (type === 'SPD' && fields.length === 6) {
     const [mode, target, ref, speed, ff, pi] = fields.map(Number);
     spd = { mode, target, ref, speed, ff, pi };
-    const active = testState === 1 && mode > 0;
+    const active = testState === 1 && (mode === 1 || mode === 2);
     spdChart.push('speed', speed);
     spdChart.push('ref', active ? ref : 0);
     spdChart.push('target', active ? target : 0);
+    return;
+  }
+
+  if (type === 'MOVE' && fields.length === 5) {
+    const [phase, target, pos, profileRpm, finalError] = fields.map(Number);
+    mv = { phase, target, pos, profileRpm, finalError };
+    if (phase !== 0 && mvMotor) {
+      mvChart.push('pos', mvFromCounts(pos));
+      mvChart.push('target', mvFromCounts(target));
+    }
     return;
   }
 
@@ -721,8 +768,51 @@ function renderTest(state) {
   }
   els.testDutyNow.textContent = parts.join(' · ');
   renderSpd(state);
+  renderMove(state);
   renderEnc(state);
   renderKs(state);
+}
+
+// Counts <-> the chosen unit, with the motor's CPR and the wheel diameter
+function mvCpr() {
+  const m = mvMotor ?? Number(els.mvMotor.value);
+  return encSettings.cpr[m] > 0 ? encSettings.cpr[m] : DEFAULT_CPR;
+}
+const mvWheelM = () => Math.max(0.01, (Number(els.mvWheel.value) || 65) / 1000);
+const mvFromCounts = (counts) => {
+  const turns = counts / mvCpr();
+  return els.mvUnit.value === 'm' ? turns * Math.PI * mvWheelM() : turns;
+};
+const mvFormat = (counts) => (els.mvUnit.value === 'm'
+  ? `${mvFromCounts(counts).toFixed(3)} m`
+  : `${mvFromCounts(counts).toFixed(2)} ${t('mvTurnsShort')}`);
+const mvDetail = (counts) => {
+  const turns = counts / mvCpr();
+  const mm = turns * Math.PI * mvWheelM() * 1000;
+  return `${counts} · ${(turns * 360).toFixed(0)}° · ${mm.toFixed(0)} mm`;
+};
+
+function renderMove(state) {
+  const supported = state === 'online' && mv !== null;
+  const moving = supported && testState === 1 && spd?.mode === 3;
+  els.mvBadge.textContent = !supported ? t('sensorWaiting')
+    : moving ? (mv.phase === 2 ? t('mvBraking') : t('testRunning'))
+    : mv.phase === 3 ? t('mvDone') : mv.phase === 4 ? t('mvAborted') : t('testIdle');
+  if (moving) els.mvBadge.dataset.level = 'run';
+  else delete els.mvBadge.dataset.level;
+  els.mvStartBtn.disabled = !supported || moving;
+  els.mvStopBtn.disabled = !moving;
+  els.mvChartTitle.textContent = t(els.mvUnit.value === 'm' ? 'mvChartMeters' : 'mvChartTurns');
+  const show = supported && mv.phase !== 0;
+  els.mvTargetNow.textContent = show ? mvFormat(mv.target) : '—';
+  els.mvTargetSub.textContent = show ? mvDetail(mv.target) : '—';
+  els.mvTraveled.textContent = show ? mvFormat(mv.pos) : '—';
+  els.mvTraveledSub.textContent = show ? mvDetail(mv.pos) : '—';
+  els.mvRemaining.textContent = show ? mvFormat(mv.target - mv.pos) : '—';
+  els.mvProfile.textContent = moving && mv.phase === 1 ? `${Math.round(mv.profileRpm)} RPM` : '—';
+  const finished = show && (mv.phase === 3 || mv.phase === 2);
+  els.mvFinalError.textContent = finished ? mvFormat(mv.target - mv.pos) : '—';
+  els.mvFinalSub.textContent = finished ? mvDetail(mv.target - mv.pos) : '—';
 }
 
 function renderSpd(state) {
@@ -930,6 +1020,69 @@ for (const el of [els.spdTarget, els.spdMode]) {
 }
 for (const el of [els.spdKp, els.spdKi, els.spdTauRef, els.spdKa]) el.addEventListener('change', sendGains);
 renderSpdMotors();
+
+// ---------- Distance test ----------
+
+function saveMove() {
+  const data = {
+    unit: els.mvUnit.value, amount: els.mvAmount.value, wheel: els.mvWheel.value,
+    maxRpm: els.mvMaxRpm.value, accel: els.mvAccel.value,
+  };
+  try { localStorage.setItem(MV_STORAGE_KEY, JSON.stringify(data)); } catch { /* storage unavailable */ }
+}
+
+function loadMove() {
+  let data = null;
+  try { data = JSON.parse(localStorage.getItem(MV_STORAGE_KEY)); } catch { /* storage unavailable */ }
+  if (!data) return;
+  if (data.unit) els.mvUnit.value = data.unit;
+  for (const [key, el] of [['amount', els.mvAmount], ['wheel', els.mvWheel], ['maxRpm', els.mvMaxRpm], ['accel', els.mvAccel]]) {
+    if (data[key] !== undefined && data[key] !== '') el.value = data[key];
+  }
+}
+
+function startMove() {
+  stopRamp();
+  stopSimTest();
+  const motor = Number(els.mvMotor.value);
+  mvMotor = motor;
+  const amount = Number(els.mvAmount.value) || 0;
+  const turns = els.mvUnit.value === 'm' ? amount / (Math.PI * mvWheelM()) : amount;
+  const counts = Math.round(turns * mvCpr());
+  const maxRpm = Math.max(40, Math.min(1100, Number(els.mvMaxRpm.value) || 300));
+  const accel = Math.max(100, Math.min(20000, Number(els.mvAccel.value) || 1500));
+  if (counts === 0) return;
+  sendGains();
+  mvChart.clear();
+  if (port) send(`MOVE,${motor},${counts},${maxRpm},${accel}`);
+  render();
+}
+
+function renderMoveMotors() {
+  const selected = els.mvMotor.value || '1';
+  els.mvMotor.innerHTML = '';
+  for (const [key, target] of Object.entries(TEST_TARGETS)) {
+    if (target.pin) continue;
+    els.mvMotor.add(new Option(`${t(target.label)} · ${target.in1} / ${target.in2}`, key));
+  }
+  els.mvMotor.value = selected;
+}
+
+els.mvStartBtn.addEventListener('click', startMove);
+els.mvStopBtn.addEventListener('click', stopTest);
+for (const el of [els.mvUnit, els.mvAmount, els.mvWheel, els.mvMaxRpm, els.mvAccel]) {
+  el.addEventListener('change', () => {
+    if (el === els.mvUnit) {
+      els.mvAmount.step = el.value === 'm' ? '0.1' : '0.5';
+      mvChart.clear();
+    }
+    saveMove();
+    render();
+  });
+}
+loadMove();
+els.mvAmount.step = els.mvUnit.value === 'm' ? '0.1' : '0.5';
+renderMoveMotors();
 
 function zeroEncoder(m) {
   if (port) send(`ENCZERO,${m}`);
@@ -1227,6 +1380,8 @@ I18N.onChange(() => {
   encChart.renderLegend();
   spdChart.renderLegend();
   renderSpdMotors();
+  mvChart.renderLegend();
+  renderMoveMotors();
   renderTestPins();
   render();
   if ('serial' in navigator) refreshPorts();

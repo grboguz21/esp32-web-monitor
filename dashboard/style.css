@@ -870,3 +870,12 @@ h2[data-help] {
 }
 .spd-tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 12px; }
 @media (max-width: 900px) { .spd-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+.mv-controls { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.mv-controls .test-buttons { grid-column: span 3; }
+@media (max-width: 900px) {
+  .mv-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .mv-controls .test-buttons { grid-column: span 2; }
+}
+.mv-tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 12px; }
+@media (max-width: 900px) { .mv-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

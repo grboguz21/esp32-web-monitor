@@ -12,7 +12,7 @@ hardware changes, re-run the tools below and compare against this page.
 | Supply | 12 V adapter |
 | PWM | 1 kHz, 10-bit, on IN1 (+) / IN2 (-) with ENA held HIGH (slow decay) |
 | Pins | ENA D25, IN1 D26, IN2 D27, encoder A D34, B D35 (encoder powered from 3V3) |
-| Firmware | 0.13.0 to 0.15.0 |
+| Firmware | 0.13.0 to 0.18.1 |
 
 **Volts are commanded volts: duty x 12 V.** The L298N drops roughly 2 V on top of that, so
 the motor sees less. That loss is folded into kS and the curve below; keep using the same
@@ -161,6 +161,48 @@ from the start threshold (+40 %/s, max 60 %) until it moves, so it does not lurc
 
 Speed ripple is about ±8 RPM: one encoder count in the 20 ms window is about 16 RPM.
 
+## Final check and distance moves
+
+Data: [`data/motor1_final_check_raw.csv`](data/motor1_final_check_raw.csv), from
+[`tools/final_check.py`](../tools/final_check.py), default gains, firmware 0.18.1.
+
+| Step (FF + PI) | Overshoot | Settling | Steady-state error |
+|---|---|---|---|
+| 0 -> 300 RPM (from rest) | 7.4 % | 350 ms | 0.0 RPM |
+| 300 -> 600 RPM | 4.1 % | 365 ms | -0.1 RPM |
+| 600 -> 300 RPM | 3.3 % | 300 ms | +0.2 RPM |
+| 300 -> 150 RPM | 14.1 % (21 RPM) | 245 ms | 0.0 RPM |
+| 150 -> -400 RPM | 3.4 % | 325 ms | +0.4 RPM |
+
+The aggressive gains overshoot a bit more than the calm ones; on the small 300 -> 150 step
+the 21 RPM peak is about one count of speed ripple.
+
+Low speed, started from rest: ±50, ±80 and ±120 RPM all hold their mean to 0.1 RPM with
+±8-9 RPM ripple (100 ms averages stay within about 20 RPM of the target). Firmware 0.18.0
+could not hold -50 RPM (it sat at -29): at low speed the estimate jumps in 16 RPM steps,
+one reading of 16 RPM counted as stuck and reset the reference. Since 0.18.1 the stuck
+check has hysteresis: free above 30 RPM (or half the target), stuck again only after 40 ms
+without turning.
+
+Ramp 0 -> 600 RPM in 2 s: the speed follows the reference to 0.0 ±8 RPM; the reference
+itself runs 30 RPM behind the command (ramp rate × tau_ref), which is by design.
+
+**Distance moves** (`MOVE` command, dashboard "Distance test" card): trapezoidal speed
+profile (accelerate, cruise, slow down so it can stop in the distance left, 40 RPM final
+approach) through the speed loop with the profile as the reference, then 300 ms of
+short-circuit braking (both inputs low, ENA high).
+
+| Move | Max speed, accel | Time | Error at stop |
+|---|---|---|---|
+| +5 turns | 300 RPM, 1500 RPM/s | 1.26 s | 0 counts |
+| -5 turns | 300 RPM, 1500 RPM/s | 1.16 s | 0 counts |
+| +1 turn | 300 RPM, 1500 RPM/s | 0.37 s | -3 counts (6°) |
+| +0.25 turn | 200 RPM, 1500 RPM/s | 0.15 s | -1 count (2°) |
+| +5 turns | 600 RPM, 3000 RPM/s | 0.69 s | -1 count (2°) |
+
+Within 3 counts (6° of the output shaft) every time, and nothing creeps after the brake.
+All of this is with the wheel in the air.
+
 ## Re-running
 
 The tools talk to the firmware over USB (460800 baud) the same way the dashboard does, so
@@ -170,6 +212,7 @@ disconnect the dashboard first. They need pyserial (PlatformIO's Python has it):
 ~/.platformio/penv/bin/python tools/kv_sweep.py     # steady-state curve, ~1.5 min
 ~/.platformio/penv/bin/python tools/step_test.py    # step responses, ~1.5 min
 ~/.platformio/penv/bin/python tools/speed_test.py   # controller check, ~25 s
+~/.platformio/penv/bin/python tools/final_check.py  # steps, low speed, ramp, moves, ~1.5 min
 ```
 
 Each writes its CSV next to the script. The motor spins in both directions up to full speed:
