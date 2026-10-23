@@ -279,7 +279,7 @@
       <div class="tab-panel" data-panel="motor" hidden>
         <section class="card motor-test" id="testCard">
           <div class="card-head">
-            <h2 data-i18n="controlTitle">Motor Control</h2>
+            <h2 data-help="control"><span data-i18n="controlTitle">Motor Control</span></h2>
             <span class="badge" id="testBadge"></span>
           </div>
           <div class="test-controls run-controls">
@@ -303,7 +303,6 @@
               <button id="testStopBtn" class="btn btn-danger" data-i18n="testStop">Stop</button>
             </div>
           </div>
-          <p class="test-warning" data-i18n="testWarning">The selected motor will spin.</p>
           <div class="card-head">
             <h3 class="chart-title" id="pwmChartTitle"></h3>
             <span class="chart-now" id="testDutyNow"></span>
@@ -313,7 +312,7 @@
 
         <section class="card spd-card" id="spdCard">
           <div class="card-head">
-            <h2 data-i18n="spdTitle">PID Tuning</h2>
+            <h2 data-help="spd"><span data-i18n="spdTitle">PID Tuning</span></h2>
             <span class="badge" id="spdBadge"></span>
           </div>
           <div class="test-controls spd-controls">
@@ -346,7 +345,6 @@
               <button id="spdStopBtn" class="btn btn-danger" data-i18n="testStop">Stop</button>
             </div>
           </div>
-          <p class="test-warning" data-i18n="spdHint">Change the target or the gains while running; they apply right away. Defaults are the SIMC values from the step test (tau_c = 125 ms).</p>
           <div class="tiles spd-tiles">
             <div class="tile"><div class="tile-label" data-i18n="spdTargetNow">Target</div><div class="tile-value" id="spdTargetNow">—</div></div>
             <div class="tile"><div class="tile-label" data-i18n="spdSpeedNow">Measured</div><div class="tile-value" id="spdSpeedNow">—</div></div>
