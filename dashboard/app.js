@@ -41,12 +41,11 @@ const els = {
   powerCards: document.querySelectorAll('.power'),
   testCard: document.getElementById('testCard'),
   testBadge: document.getElementById('testBadge'),
-  testPin: document.getElementById('testPin'),
-  testDirBtns: document.querySelectorAll('[data-dir]'),
-  testDuty: document.getElementById('testDuty'),
+  testDuty1: document.getElementById('testDuty1'),
+  testDuty2: document.getElementById('testDuty2'),
+  testNow1: document.getElementById('testNow1'),
+  testNow2: document.getElementById('testNow2'),
   testDuration: document.getElementById('testDuration'),
-  testDutyNow: document.getElementById('testDutyNow'),
-  pwmChartTitle: document.getElementById('pwmChartTitle'),
   testStartBtn: document.getElementById('testStartBtn'),
   spdCard: document.getElementById('spdCard'),
   spdBadge: document.getElementById('spdBadge'),
@@ -86,24 +85,6 @@ const els = {
   encCard: document.getElementById('encCard'),
   encBadge: document.getElementById('encBadge'),
   encChartTitle: document.getElementById('encChartTitle'),
-  ksMotor: document.getElementById('ksMotor'),
-  ksType: document.getElementById('ksType'),
-  ksStatus: document.getElementById('ksStatus'),
-  rampMax: document.getElementById('rampMax'),
-  rampMaxLabel: document.getElementById('rampMaxLabel'),
-  rampTime: document.getElementById('rampTime'),
-  rampPlusBtn: document.getElementById('rampPlusBtn'),
-  rampMinusBtn: document.getElementById('rampMinusBtn'),
-  rampStopBtn: document.getElementById('rampStopBtn'),
-  ksRecordBtn: document.getElementById('ksRecordBtn'),
-  ksCells: {
-    startPlus: document.getElementById('ksStartPlus'),
-    startMinus: document.getElementById('ksStartMinus'),
-    stopPlus: document.getElementById('ksStopPlus'),
-    stopMinus: document.getElementById('ksStopMinus'),
-  },
-  ksSupply: document.getElementById('ksSupply'),
-  ksResetBtn: document.getElementById('ksResetBtn'),
   testStopBtn: document.getElementById('testStopBtn'),
   log: document.getElementById('log'),
   clearLogBtn: document.getElementById('clearLogBtn'),
@@ -182,33 +163,17 @@ const voltageChart = new LiveChart(document.getElementById('voltageChart'), {
   labels: chartLabels,
 });
 
-// Motor direction test: one motor at a signed duty, reported back as RUNOUT
+// Motor control: both motors open loop (DUTY), reported back as RUNOUT and DUTYOUT
 const TEST_STATES = ['testIdle', 'testRunning', 'testWatchdog', 'testDone'];
-const TEST_MOTOR_STORAGE_KEY = 'esp32-dashboard-test-motor';
-// Test targets (board labels): each motor's L298N inputs, + drives IN1 and - drives IN2;
-// target 3 is the onboard LED on D2, which has no direction
+// Motors (board labels): each one's L298N inputs, + drives IN1 and - drives IN2
 const TEST_TARGETS = {
   1: { label: 'motor1', in1: 'D26', in2: 'D27' },
   2: { label: 'motor2', in1: 'D19', in2: 'D23' },
-  3: { label: 'testLed', pin: 'D2' },
 };
-const isLedTarget = (target) => Boolean(TEST_TARGETS[target]?.pin);
-let testDirection = 1;   // +1 or -1
 let testState = null;    // null until the firmware reports RUNOUT, then 0 idle / 1 running / 2 watchdog / 3 done
-let testOutput = null;   // { motor, duty, remainingMs }
+let testOutput = null;   // { motor, duty, remainingMs }; motor 4 = both (DUTY)
+const motorDuty = { 1: 0, 2: 0 };   // duty on each motor right now, from DUTYOUT
 let simTimer = null;     // simulated run while demo data is on and no board is connected
-
-// Start and stop thresholds per motor and direction, saved in this browser
-const KS_STORAGE_KEY = 'esp32-dashboard-ks';
-// { '1': { startPlus, startMinus, stopPlus, stopMinus }, ... } duty in %
-let ksResults = {};
-try { ksResults = JSON.parse(localStorage.getItem(KS_STORAGE_KEY)) ?? {}; } catch { /* storage unavailable */ }
-for (const entry of Object.values(ksResults)) {
-  // Earlier versions stored only start thresholds as plus/minus
-  if ('plus' in entry) { entry.startPlus ??= entry.plus; delete entry.plus; }
-  if ('minus' in entry) { entry.startMinus ??= entry.minus; delete entry.minus; }
-}
-let ramp = null;        // { timer, motor, dir, type } while a ramp runs
 
 // Encoders: latest ENC report, counts per output-shaft revolution and sign flip per motor
 const ENC_STORAGE_KEY = 'esp32-dashboard-encoder';
@@ -282,40 +247,26 @@ const encChart = new LiveChart(document.getElementById('encChart'), {
   labels: chartLabels,
 });
 
-function saveKs() {
-  try { localStorage.setItem(KS_STORAGE_KEY, JSON.stringify(ksResults)); } catch { /* storage unavailable */ }
-}
-
 const signedPercent = (d) => `${d > 0 ? '+' : d < 0 ? '−' : ''}${Math.abs(d).toFixed(0)} %`;
 
-const pwmChart = new LiveChart(document.getElementById('pwmChart'), {
-  series: [{ key: 'pwm', label: () => t('tDuty'), short: '', color: '--accent' }],
+const dutyChart = new LiveChart(document.getElementById('dutyChart'), {
+  series: motorSeries,
+  legend: document.getElementById('dutyLegend'),
   format: signedPercent,
   range: [-100, 100],
   windowMs: 20000,
   labels: chartLabels,
 });
-
-function renderTestPins() {
-  let selected = els.testPin.value;
-  if (!selected) {
-    try { selected = localStorage.getItem(TEST_MOTOR_STORAGE_KEY); } catch { /* storage unavailable */ }
-  }
-  els.testPin.innerHTML = '';
-  for (const [key, target] of Object.entries(TEST_TARGETS)) {
-    const pins = target.pin ?? `${target.in1} / ${target.in2}`;
-    els.testPin.add(new Option(`${t(target.label)} · ${pins}`, key));
-  }
-  els.testPin.value = selected in TEST_TARGETS ? selected : '1';
-
-  const ksSelected = els.ksMotor.value || '1';
-  els.ksMotor.innerHTML = '';
-  for (const [key, target] of Object.entries(TEST_TARGETS)) {
-    if (target.pin) continue;   // thresholds are for motors only
-    els.ksMotor.add(new Option(`${t(target.label)} · ${target.in1} / ${target.in2}`, key));
-  }
-  els.ksMotor.value = ksSelected;
-}
+const rpmChart = new LiveChart(document.getElementById('rpmChart'), {
+  series: motorSeries,
+  legend: document.getElementById('rpmLegend'),
+  format: (v) => `${Math.round(v)} RPM`,
+  minSpan: 50,
+  windowMs: 20000,
+  labels: chartLabels,
+});
+// RPM with the measured CPR, or motor 1's until the encoder card has one
+const encRpm = (m, cps) => (cps * 60) / (encSettings.cpr[m] > 0 ? encSettings.cpr[m] : DEFAULT_CPR);
 
 let uptimeMs = null;
 let lastBeatAt = 0;     // performance.now() of the last heartbeat
@@ -563,8 +514,9 @@ function handleLine(line) {
     for (const [m, count, cps] of [[1, c1, s1], [2, c2, s2]]) {
       encData[m] = { count, cps };
       encChart.push(m, encSpeedValue(m, cps));
+      rpmChart.push(m, encRpm(m, cps));
       // While this motor is driven, does + duty give positive counts?
-      const duty = testOutput?.motor === m && testState === 1 ? testOutput.duty : 0;
+      const duty = testState === 1 ? motorDuty[m] : 0;
       if (duty !== 0 && Math.abs(cps) > 20) encDirCheck[m] = Math.sign(cps) === Math.sign(duty);
     }
     return;
@@ -574,7 +526,15 @@ function handleLine(line) {
     const [state, motor, duty, remainingMs] = fields.map(Number);
     testState = state;
     testOutput = { motor, duty, remainingMs };
-    pwmChart.push('pwm', duty);
+    return;
+  }
+
+  if (type === 'DUTYOUT' && fields.length === 2) {
+    const [d1, d2] = fields.map(Number);
+    motorDuty[1] = d1;
+    motorDuty[2] = d2;
+    dutyChart.push(1, d1);
+    dutyChart.push(2, d2);
     return;
   }
 
@@ -767,36 +727,18 @@ function renderTest(state) {
   else delete els.testBadge.dataset.level;
   els.testStartBtn.disabled = !((state === 'online' && supported) || (demo && !port));
   els.testStopBtn.disabled = !(simTimer !== null || (port && testState === 1));
-  const ledSelected = isLedTarget(Number(els.testPin.value));
-  for (const b of els.testDirBtns) {
-    b.setAttribute('aria-pressed', String(!ledSelected && Number(b.dataset.dir) === testDirection));
-    b.disabled = ledSelected;
-  }
   els.testDuration.placeholder = t('durationHint');
-
-  // Which pin gets the PWM: the running target and direction, or what is selected now
   const running = (simTimer !== null || testState === 1) && testOutput;
-  const target = running ? testOutput.motor : Number(els.testPin.value);
-  const info = TEST_TARGETS[target] ?? TEST_TARGETS[1];
-  const dir = running && testOutput.duty !== 0 ? Math.sign(testOutput.duty) : testDirection;
-  els.pwmChartTitle.textContent = info.pin
-    ? t('runTargetLed', { led: t(info.label), pin: info.pin })
-    : t('runTarget', {
-        motor: t(info.label),
-        dir: dir > 0 ? '+' : '−',
-        pin: dir > 0 ? info.in1 : info.in2,
-        input: dir > 0 ? 'IN1' : 'IN2',
-      });
-  const parts = [];
-  if (running) {
-    parts.push(signedPercent(testOutput.duty));
-    if (testOutput.remainingMs > 0) parts.push(t('remaining', { s: (testOutput.remainingMs / 1000).toFixed(1) }));
+  for (const m of MOTORS) {
+    const enc = encData[m];
+    const parts = [];
+    if (running) parts.push(signedPercent(motorDuty[m]));
+    if (live && enc.count !== null) parts.push(`${Math.round(encRpm(m, enc.cps))} RPM`);
+    els[`testNow${m}`].textContent = parts.length ? parts.join(' · ') : '—';
   }
-  els.testDutyNow.textContent = parts.join(' · ');
   renderSpd(state);
   renderMove(state);
   renderEnc(state);
-  renderKs(state);
 }
 
 // Counts <-> the chosen unit, with the motor's CPR and the wheel diameter
@@ -920,32 +862,6 @@ function renderEnc(state) {
   }
 }
 
-function renderKs(state) {
-  const canRun = (state === 'online' && testState !== null) || (demoTimer !== null && !port);
-  const type = ramp ? ramp.type : els.ksType.value;
-  els.rampMaxLabel.textContent = t(els.ksType.value === 'start' ? 'rampMax' : 'rampFrom');
-  els.rampPlusBtn.disabled = !canRun;
-  els.rampMinusBtn.disabled = !canRun;
-  els.ksRecordBtn.disabled = !ramp;
-  els.rampStopBtn.disabled = !ramp;
-  els.ksRecordBtn.textContent = t(type === 'start' ? 'ksRecordStart' : 'ksRecordStop');
-  els.ksStatus.textContent = ramp && testOutput
-    ? t('ksStatusRun', {
-        type: t(ramp.type === 'start' ? 'ksStart' : 'ksStop'),
-        dir: ramp.dir > 0 ? '+' : '−',
-        duty: `${Math.abs(testOutput.duty).toFixed(1)} %`,
-      })
-    : '';
-
-  const result = ksResults[els.ksMotor.value] ?? {};
-  const supply = Number(els.ksSupply.value) || 12;
-  for (const [key, cell] of Object.entries(els.ksCells)) {
-    const duty = result[key];
-    cell.textContent = duty == null ? '—' : `${duty.toFixed(1)} % · ${(duty / 100 * supply).toFixed(2)} V`;
-  }
-  els.ksResetBtn.disabled = Object.keys(result).length === 0;
-}
-
 function log(message) {
   const time = new Date().toLocaleTimeString(I18N.lang === 'tr' ? 'tr-TR' : 'en-GB');
   const lines = (els.log.textContent + `[${time}] ${message}\n`).split('\n');
@@ -1055,7 +971,6 @@ function sendGains() {
 }
 
 function startSpeed() {
-  stopRamp();
   stopSimTest();
   sendGains();
   const target = Math.max(-1200, Math.min(1200, Number(els.spdTarget.value) || 0));
@@ -1103,7 +1018,6 @@ function loadMove() {
 }
 
 function startMove() {
-  stopRamp();
   stopSimTest();
   const motor = Number(els.mvMotor.value);
   mvMotor = motor;
@@ -1165,7 +1079,7 @@ function startEncSim() {
     sim.last = now;
     const parts = [];
     for (const m of MOTORS) {
-      const duty = testOutput?.motor === m && testState === 1 ? testOutput.duty : 0;
+      const duty = testState === 1 ? motorDuty[m] : 0;
       const drive = Math.max(0, Math.abs(duty) - 11) / 89;
       const target = Math.sign(duty) * drive * (1350 / 60) * CPR * (m === 2 ? 0.95 : 1);
       sim.speed[m] += (target - sim.speed[m]) * Math.min(1, dt / 0.12);
@@ -1224,74 +1138,32 @@ for (const row of els.encCard.querySelectorAll('[data-emotor]')) {
   });
 }
 
-// ---------- Motor direction test ----------
+// ---------- Motor control ----------
 
 function readTestParams() {
-  const duty = Math.max(0, Math.min(100, Number(els.testDuty.value) || 0));
-  const target = Number(els.testPin.value);
+  const duty = (el) => Math.max(-100, Math.min(100, Number(el.value) || 0));
   return {
-    motor: target,
-    duty: isLedTarget(target) ? duty : duty * testDirection,
+    duties: [duty(els.testDuty1), duty(els.testDuty2)],
     durationMs: Math.max(0, Math.round((Number(els.testDuration.value) || 0) * 1000)),
   };
 }
 
-// The chart is never cleared here, so starts, stops and changes stay on it as history
+// The charts are never cleared here, so starts, stops and changes stay on them as history
 function startTest() {
-  stopRamp();
-  sendRun(readTestParams());
-  render();
-}
-
-function sendRun(p) {
-  if (port) send(`RUN,${p.motor},${p.duty},${p.durationMs}`);
+  const p = readTestParams();
+  if (port) send(`DUTY,${p.duties[0]},${p.duties[1]},${p.durationMs}`);
   else if (demoTimer !== null) startSimTest(p);
-}
-
-// Threshold ramps: 'start' climbs from 0 to the limit (press Save when the motor starts
-// turning); 'stop' falls from the limit to 0 (press Save when it stops)
-function startRamp(dir) {
-  stopRamp();
-  const motor = Number(els.ksMotor.value);
-  const type = els.ksType.value;
-  const max = Math.max(1, Math.min(100, Number(els.rampMax.value) || 50));
-  const durationMs = Math.max(1, Number(els.rampTime.value) || 30) * 1000;
-  const start = performance.now();
-  const step = () => {
-    const f = Math.min(1, (performance.now() - start) / durationMs);
-    const duty = (type === 'start' ? f : 1 - f) * max;
-    sendRun({ motor, duty: duty * dir, durationMs: 0 });
-    if (f >= 1) stopTest();   // ran out without a save
-  };
-  ramp = { timer: setInterval(step, 100), motor, dir, type };
-  step();
   render();
-}
-
-function stopRamp() {
-  if (!ramp) return;
-  clearInterval(ramp.timer);
-  ramp = null;
-}
-
-function recordThreshold() {
-  if (!ramp || !testOutput) return;
-  const entry = (ksResults[ramp.motor] ??= {});
-  const key = `${ramp.type}${ramp.dir > 0 ? 'Plus' : 'Minus'}`;
-  entry[key] = Math.round(Math.abs(testOutput.duty) * 10) / 10;
-  saveKs();
-  stopTest();
 }
 
 function stopTest() {
-  stopRamp();
   if (port) send('STOP');
-  else if (simTimer !== null) startSimIdle(testOutput?.motor ?? 1, 0);
+  else if (simTimer !== null) startSimIdle(0);
   render();
 }
 
-// Demo only: reports the same RUNOUT lines the firmware would send, including the
-// idle ones (duty 0) between runs, so the chart keeps flowing like with a real board
+// Demo only: reports the same RUNOUT / DUTYOUT lines the firmware would send, including
+// the idle ones between runs, so the charts keep flowing like with a real board
 let simIdleTimer = null;
 
 function startSimTest(p) {
@@ -1300,18 +1172,22 @@ function startSimTest(p) {
   simTimer = setInterval(() => {
     const elapsed = performance.now() - start;
     if (p.durationMs > 0 && elapsed >= p.durationMs) {
-      startSimIdle(p.motor, 3);
+      startSimIdle(3);
       render();
       return;
     }
     const remaining = p.durationMs > 0 ? Math.round(p.durationMs - elapsed) : 0;
-    handleLine(`RUNOUT,1,${p.motor},${p.duty.toFixed(1)},${remaining}`);
+    handleLine(`RUNOUT,1,4,${p.duties[0].toFixed(1)},${remaining}`);
+    handleLine(`DUTYOUT,${p.duties[0].toFixed(1)},${p.duties[1].toFixed(1)}`);
   }, 40);
 }
 
-function startSimIdle(motor, state) {
+function startSimIdle(state) {
   stopSimTest();
-  simIdleTimer = setInterval(() => handleLine(`RUNOUT,${state},${motor},0.0,0`), 40);
+  simIdleTimer = setInterval(() => {
+    handleLine(`RUNOUT,${state},4,0.0,0`);
+    handleLine('DUTYOUT,0.0,0.0');
+  }, 40);
 }
 
 function stopSimTest() {
@@ -1324,46 +1200,20 @@ function stopSimTest() {
 function resetTestData() {
   testState = null;
   testOutput = null;
-  pwmChart.clear();
+  motorDuty[1] = 0;
+  motorDuty[2] = 0;
+  dutyChart.clear();
+  rpmChart.clear();
 }
 
 els.testStartBtn.addEventListener('click', () => startTest());
 els.testStopBtn.addEventListener('click', stopTest);
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') stopTest(); });
-for (const b of els.testDirBtns) {
-  b.addEventListener('click', () => {
-    testDirection = Number(b.dataset.dir);
-    // Flip a running motor straight away so the direction can be compared
-    if (!ramp && (simTimer !== null || (port && testState === 1))) startTest();
-    else render();
-  });
+// A new duty takes effect right away while running (Enter or leaving the field)
+const dutyRunning = () => simTimer !== null || (port && testState === 1 && testOutput?.motor === 4);
+for (const el of [els.testDuty1, els.testDuty2]) {
+  el.addEventListener('change', () => { if (dutyRunning()) startTest(); });
 }
-
-renderTestPins();
-// A new duty takes effect right away while the motor runs (Enter or leaving the field)
-els.testDuty.addEventListener('change', () => {
-  if (!ramp && (simTimer !== null || (port && testState === 1))) startTest();
-});
-els.rampPlusBtn.addEventListener('click', () => startRamp(1));
-els.rampMinusBtn.addEventListener('click', () => startRamp(-1));
-els.rampStopBtn.addEventListener('click', stopTest);
-els.ksRecordBtn.addEventListener('click', recordThreshold);
-els.ksType.addEventListener('change', () => {
-  // A stop test should begin above the start threshold, so suggest a higher value
-  els.rampMax.value = els.ksType.value === 'start' ? 50 : 40;
-  render();
-});
-els.ksMotor.addEventListener('change', render);
-els.ksSupply.addEventListener('input', render);
-els.ksResetBtn.addEventListener('click', () => {
-  delete ksResults[els.ksMotor.value];
-  saveKs();
-  render();
-});
-els.testPin.addEventListener('change', () => {
-  try { localStorage.setItem(TEST_MOTOR_STORAGE_KEY, els.testPin.value); } catch { /* storage unavailable */ }
-  render();
-});
 
 // Tells the firmware the page is alive; without it the motor stops after 1 s
 setInterval(() => { if (port) send('PING'); }, 200);
@@ -1496,7 +1346,8 @@ I18N.onChange(() => {
   mvChart.renderLegend();
   mvSpeedChart.renderLegend();
   renderMoveMotors();
-  renderTestPins();
+  dutyChart.renderLegend();
+  rpmChart.renderLegend();
   render();
   if ('serial' in navigator) refreshPorts();
 });

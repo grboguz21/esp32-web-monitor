@@ -45,6 +45,7 @@ constexpr size_t MOTOR_COUNT = sizeof(MOTOR_PINS) / sizeof(MOTOR_PINS[0]);
 // The onboard LED can stand in for a motor to check the test without any wiring
 constexpr int LED_PIN = 2;
 constexpr unsigned LED_TARGET = MOTOR_COUNT + 1;   // RUN target number after the motors
+constexpr int ALL_MOTORS = MOTOR_COUNT + 1;         // MotorRun.motor for DUTY: every motor at once
 constexpr uint32_t PWM_FREQ_HZ = 1000;      // same as Arduino-ESP32's analogWrite() default
 constexpr uint8_t PWM_BITS = 10;
 constexpr uint32_t PWM_MAX = (1 << PWM_BITS) - 1;
@@ -100,7 +101,7 @@ constexpr int32_t MOVE_TOLERANCE_COUNTS = 2;   // close enough: start braking
 constexpr uint32_t MOVE_BRAKE_MS = 300;        // both inputs low (short-circuit brake), then coast
 enum class MovePhase : uint8_t { Idle = 0, Moving = 1, Braking = 2, Done = 3, Aborted = 4 };
 
-constexpr const char* FIRMWARE_VERSION = "0.18.1";
+constexpr const char* FIRMWARE_VERSION = "0.19.0";
 
 // Protocol (one message per line):
 //   ESP32 -> PC : HB,<uptime_ms>               heartbeat
@@ -117,6 +118,8 @@ constexpr const char* FIRMWARE_VERSION = "0.18.1";
 //                 ENC,<count1>,<cps1>,<count2>,<cps2>
 //                 (encoder counts and counts per second; the sign follows the + direction
 //                  once ENCINV has been set to match)
+//                 (motor 4 = both, from DUTY)
+//                 DUTYOUT,<duty1>,<duty2>      duty driven on each motor right now (any mode)
 //                 SPD,<mode>,<target_rpm>,<ref_rpm>,<speed_rpm>,<ff_duty>,<pi_duty>
 //                 MOVE,<phase>,<target_counts>,<position_counts>,<profile_rpm>,<final_error_counts>
 //                 (phase 0 idle, 1 moving, 2 braking, 3 done, 4 aborted; position from the start)
@@ -130,6 +133,8 @@ constexpr const char* FIRMWARE_VERSION = "0.18.1";
 //                                              drive one motor: duty -100..100 %, + = IN1, - = IN2;
 //                                              target 3 is the onboard LED (brightness = |duty|);
 //                                              duration_ms 0 runs until STOP
+//                 DUTY,<duty1>,<duty2>,<duration_ms>
+//                                              drive both motors open loop at once (0 = coast)
 //                 STOP                         stop the motor
 //                 ENCZERO,<motor>              zero that motor's encoder count
 //                 ENCINV,<motor>,<0|1>         flip that encoder's sign
@@ -160,6 +165,7 @@ struct MotorRun {
   int motor = 0;              // index into MOTOR_PINS, or MOTOR_COUNT for the LED
   RunMode mode = RunMode::OpenLoop;
   float duty = 0;             // -100..100 %, open loop
+  float duties[MOTOR_COUNT] = {};   // DUTY: per motor, open loop
   float targetRpm = 0;        // speed modes
   int32_t moveCounts = 0;     // move mode: signed distance
   float moveMaxRpm = 0;
@@ -175,6 +181,7 @@ MotorRun motorRun;
 RunState runState = RunState::Idle;
 uint32_t lastPingMs = 0;
 float outputDuty = 0;   // duty currently driven, signed
+float motorDuty[MOTOR_COUNT] = {};   // duty on each motor right now
 float gainKp = DEFAULT_KP;
 float gainKi = DEFAULT_KI;
 float refTauS = DEFAULT_TAU_REF_S;
@@ -372,6 +379,23 @@ void handleCommand(const String& cmd) {
       motorCpr[motor - 1] = cpr;
       portEXIT_CRITICAL(&runMux);
     }
+  } else if (cmd.startsWith("DUTY,")) {
+    float d1, d2;
+    unsigned long duration;
+    if (sscanf(cmd.c_str(), "DUTY,%f,%f,%lu", &d1, &d2, &duration) == 3) {
+      portENTER_CRITICAL(&runMux);
+      motorRun.motor = ALL_MOTORS;
+      motorRun.mode = RunMode::OpenLoop;
+      motorRun.targetRpm = 0;
+      motorRun.duties[0] = constrain(d1, -100.0f, 100.0f);
+      motorRun.duties[1] = constrain(d2, -100.0f, 100.0f);
+      motorRun.duty = motorRun.duties[0];
+      motorRun.durationMs = duration;
+      motorRun.startMs = millis();
+      lastPingMs = millis();
+      runState = RunState::Running;
+      portEXIT_CRITICAL(&runMux);
+    }
   } else if (cmd.startsWith("RUN,")) {
     unsigned motor;
     float duty;
@@ -534,6 +558,8 @@ void sendMotorRun() {
   RunState state = runState;
   MotorRun run = motorRun;
   float duty = outputDuty;
+  float duties[MOTOR_COUNT];
+  for (size_t i = 0; i < MOTOR_COUNT; i++) duties[i] = motorDuty[i];
   portEXIT_CRITICAL(&runMux);
 
   uint32_t remaining = 0;
@@ -543,6 +569,7 @@ void sendMotorRun() {
   }
   Serial.printf("RUNOUT,%u,%d,%.1f,%lu\n", (unsigned)state, run.motor + 1, duty,
                 (unsigned long)remaining);
+  Serial.printf("DUTYOUT,%.1f,%.1f\n", duties[0], duties[1]);
 
   portENTER_CRITICAL(&runMux);
   EncoderStatus enc[MOTOR_COUNT];
@@ -847,17 +874,22 @@ void runMotors() {
   portENTER_CRITICAL(&runMux);
   moveStatus = {mv.phase, mv.targetCounts, mv.positionCounts, mv.profileRpm, mv.finalErrorCounts};
   portEXIT_CRITICAL(&runMux);
+  bool allActive = running && run.motor == ALL_MOTORS;
+  float applied[MOTOR_COUNT];
   for (size_t i = 0; i < MOTOR_COUNT; i++) {
     bool active = motorActive && i == (size_t)run.motor;
-    applyDuty(i, active ? duty : 0, active);
+    applied[i] = allActive ? run.duties[i] : active ? duty : 0;
+    applyDuty(i, applied[i], active || (allActive && applied[i] != 0));
   }
+  if (allActive) duty = run.duties[0];
   bool ledActive = running && run.motor == (int)MOTOR_COUNT;
   float ledDuty = ledActive ? fabsf(run.duty) : 0;   // the LED has no direction
   ledcWrite(LED_PIN, (uint32_t)(ledDuty / 100.0f * PWM_MAX + 0.5f));
 
-  float shownSpeed = run.motor < (int)MOTOR_COUNT ? speedRpm[run.motor] : 0;
+  float shownSpeed = run.motor < (int)MOTOR_COUNT ? speedRpm[run.motor] : allActive ? speedRpm[0] : 0;
   portENTER_CRITICAL(&runMux);
   outputDuty = !running ? 0 : ledActive ? ledDuty : duty;
+  for (size_t i = 0; i < MOTOR_COUNT; i++) motorDuty[i] = applied[i];
   controlStatus = {run.mode == RunMode::OpenLoop ? 0 : pi.refRpm, shownSpeed, ffDuty, piDuty};
   portEXIT_CRITICAL(&runMux);
 

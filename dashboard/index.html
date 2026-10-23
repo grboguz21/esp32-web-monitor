@@ -282,19 +282,21 @@
             <h2 data-help="control"><span data-i18n="controlTitle">Motor Control</span></h2>
             <span class="badge" id="testBadge"></span>
           </div>
+          <div class="duty-rows">
+            <label class="duty-row">
+              <span class="duty-name"><i class="motor-swatch" style="background: var(--series-1)"></i><span data-i18n="motor1">Motor 1</span></span>
+              <input id="testDuty1" type="number" min="-100" max="100" step="5" value="40">
+              <span class="duty-unit">%</span>
+              <span class="duty-now" id="testNow1">—</span>
+            </label>
+            <label class="duty-row">
+              <span class="duty-name"><i class="motor-swatch" style="background: var(--series-2)"></i><span data-i18n="motor2">Motor 2</span></span>
+              <input id="testDuty2" type="number" min="-100" max="100" step="5" value="0">
+              <span class="duty-unit">%</span>
+              <span class="duty-now" id="testNow2">—</span>
+            </label>
+          </div>
           <div class="test-controls run-controls">
-            <label class="field"><span data-i18n="testPin">Pin</span>
-              <select id="testPin"></select>
-            </label>
-            <div class="field"><span data-i18n="testDirection">Direction</span>
-              <div class="dir-switch" role="group">
-                <button type="button" data-dir="1">+</button>
-                <button type="button" data-dir="-1">−</button>
-              </div>
-            </div>
-            <label class="field"><span data-i18n="testDuty">Duty (%)</span>
-              <input id="testDuty" type="number" min="0" max="100" step="5" value="40">
-            </label>
             <label class="field"><span data-i18n="testDuration">Duration (s)</span>
               <input id="testDuration" type="number" min="0" step="1" value="">
             </label>
@@ -303,11 +305,22 @@
               <button id="testStopBtn" class="btn btn-danger" data-i18n="testStop">Stop</button>
             </div>
           </div>
-          <div class="card-head">
-            <h3 class="chart-title" id="pwmChartTitle"></h3>
-            <span class="chart-now" id="testDutyNow"></span>
+          <div class="chart-pair">
+            <div>
+              <div class="card-head">
+                <h3 class="chart-title" data-i18n="dutyChart">PWM / time (%)</h3>
+                <div class="chart-legend" id="dutyLegend"></div>
+              </div>
+              <div class="chart" id="dutyChart"></div>
+            </div>
+            <div>
+              <div class="card-head">
+                <h3 class="chart-title" data-i18n="rpmChart">RPM / time</h3>
+                <div class="chart-legend" id="rpmLegend"></div>
+              </div>
+              <div class="chart" id="rpmChart"></div>
+            </div>
           </div>
-          <div class="chart" id="pwmChart"></div>
         </section>
 
         <section class="card spd-card" id="spdCard">
@@ -398,15 +411,15 @@
             <div class="tile"><div class="tile-label" data-i18n="mvRemaining">Remaining</div><div class="tile-value" id="mvRemaining">—</div><div class="tile-sub" id="mvProfile">—</div></div>
             <div class="tile"><div class="tile-label" data-i18n="mvFinalError">Final error</div><div class="tile-value" id="mvFinalError">—</div><div class="tile-sub" id="mvFinalSub">—</div></div>
           </div>
-          <div class="mv-charts">
-            <div class="mv-chart-col">
+          <div class="chart-pair">
+            <div>
               <div class="card-head">
                 <h3 class="chart-title" id="mvChartTitle"></h3>
                 <div class="chart-legend" id="mvLegend"></div>
               </div>
               <div class="chart" id="mvChart"></div>
             </div>
-            <div class="mv-chart-col">
+            <div>
               <div class="card-head">
                 <h3 class="chart-title" data-i18n="mvSpeedChart">Speed: profile and measured (RPM)</h3>
                 <div class="chart-legend" id="mvSpeedLegend"></div>
@@ -493,47 +506,6 @@
           <div class="chart" id="encChart"></div>
         </section>
 
-        <section class="card ks-card" id="ksCard">
-          <div class="card-head">
-            <h2 data-i18n="ksCardTitle">Start and stop thresholds</h2>
-            <span class="chart-now" id="ksStatus"></span>
-          </div>
-          <div class="test-controls ks-controls">
-            <label class="field"><span data-i18n="testPin">Pin</span>
-              <select id="ksMotor"></select>
-            </label>
-            <label class="field"><span data-i18n="ksType">Test</span>
-              <select id="ksType">
-                <option value="start" data-i18n="ksTypeStart">Start (ramp up)</option>
-                <option value="stop" data-i18n="ksTypeStop">Stop (ramp down)</option>
-              </select>
-            </label>
-            <label class="field"><span id="rampMaxLabel"></span>
-              <input id="rampMax" type="number" min="1" max="100" step="5" value="50">
-            </label>
-            <label class="field"><span data-i18n="rampTime">Ramp time (s)</span>
-              <input id="rampTime" type="number" min="1" step="1" value="30">
-            </label>
-          </div>
-          <div class="ks-buttons">
-            <button id="rampPlusBtn" class="btn btn-secondary" data-i18n="rampPlus">Start in +</button>
-            <button id="rampMinusBtn" class="btn btn-secondary" data-i18n="rampMinus">Start in −</button>
-            <button id="ksRecordBtn" class="btn btn-record"></button>
-            <button id="rampStopBtn" class="btn btn-danger" data-i18n="testStop">Stop</button>
-          </div>
-          <div class="ks-results">
-            <table class="ks-table">
-              <tr><th></th><th>+</th><th>−</th></tr>
-              <tr><th data-i18n="ksStart">Start</th><td id="ksStartPlus">—</td><td id="ksStartMinus">—</td></tr>
-              <tr><th data-i18n="ksStop">Stop</th><td id="ksStopPlus">—</td><td id="ksStopMinus">—</td></tr>
-            </table>
-            <label class="ks-supply"><span data-i18n="ksSupply">Supply (V)</span>
-              <input id="ksSupply" type="number" min="1" max="30" step="0.1" value="12">
-            </label>
-            <button id="ksResetBtn" class="btn btn-ghost" data-i18n="ksReset">Clear</button>
-          </div>
-          <p class="test-warning" data-i18n="ksHint">Start: the duty climbs from 0; press Save the moment the motor starts turning. Stop: the duty falls from the start value; press Save the moment it stops.</p>
-        </section>
       </div>
 
       <div class="tab-panel" data-panel="board" hidden>

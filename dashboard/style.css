@@ -821,56 +821,30 @@ h2[data-help] {
 .badge[data-level="done"] { background: var(--secondary-bg); color: var(--text); }
 
 
-/* Motor direction test */
-.run-controls { grid-template-columns: minmax(0, 1.4fr) auto minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.6fr); }
+/* Motor control */
+.run-controls { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); }
 .run-controls .test-buttons { grid-column: auto; }
+.duty-rows { display: grid; gap: 8px; margin-bottom: 12px; }
+.duty-row { display: grid; grid-template-columns: 100px minmax(0, 140px) auto 1fr; align-items: center; gap: 10px; font-size: 0.85rem; }
+.duty-row input {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+.duty-name { display: inline-flex; align-items: center; gap: 8px; font-weight: 700; }
+.duty-unit { color: var(--muted); }
+.duty-now { justify-self: end; font-weight: 700; font-variant-numeric: tabular-nums; }
 @media (max-width: 900px) {
   .run-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .run-controls .test-buttons { grid-column: span 2; }
 }
-.dir-switch {
-  display: flex;
-  padding: 2px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-}
-.dir-switch button {
-  min-width: 44px;
-  border: 0;
-  border-radius: 6px;
-  padding: 6px 12px;
-  background: transparent;
-  color: var(--muted);
-  font: inherit;
-  font-size: 1rem;
-  font-weight: 700;
-  cursor: pointer;
-}
-.dir-switch button[aria-pressed="true"] { background: var(--accent); color: var(--accent-text); }
-.dir-switch button:disabled { opacity: 0.4; cursor: not-allowed; }
-.dir-switch button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
-/* Start threshold (kS) */
-.ks-buttons { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
-@media (max-width: 900px) { .ks-buttons { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-.ks-table { border-collapse: collapse; font-variant-numeric: tabular-nums; }
-.ks-table th, .ks-table td { padding: 4px 14px 4px 0; text-align: left; }
-.ks-table th { color: var(--muted); font-weight: 600; font-size: 0.78rem; }
-.ks-table td { font-weight: 700; min-width: 130px; }
-.btn-record { background: var(--online); color: #fff; }
-.ks-results {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 20px;
-  margin: 4px 0 8px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: var(--secondary-bg);
-  font-size: 0.85rem;
-  font-variant-numeric: tabular-nums;
-}
+/* Small inline number field (encoder card) */
 .ks-supply { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; color: var(--muted); font-size: 0.75rem; }
 .ks-supply input {
   width: 70px;
@@ -911,7 +885,7 @@ h2[data-help] {
 }
 .mv-tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 12px; }
 @media (max-width: 900px) { .mv-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-.mv-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
-@media (max-width: 900px) { .mv-charts { grid-template-columns: 1fr; } }
+.chart-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+@media (max-width: 900px) { .chart-pair { grid-template-columns: 1fr; } }
 .mv-estimate { display: flex; flex-wrap: wrap; gap: 6px 20px; margin: 4px 0 10px; font-size: 13px; color: var(--text-secondary, inherit); }
 .mv-estimate b { color: var(--text, inherit); font-weight: 600; font-variant-numeric: tabular-nums; }
