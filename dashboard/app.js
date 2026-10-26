@@ -694,7 +694,9 @@ function handleLine(line) {
 
 function currentState() {
   if (!port) return 'offline';
-  if (lastBeatAt && performance.now() - lastBeatAt < HEARTBEAT_TIMEOUT_MS) return 'online';
+  // Wi-Fi can pause for a moment on a weak signal, so it gets more slack before 'waiting'
+  const timeout = port.ws ? HEARTBEAT_TIMEOUT_MS * 2 : HEARTBEAT_TIMEOUT_MS;
+  if (lastBeatAt && performance.now() - lastBeatAt < timeout) return 'online';
   return 'waiting';
 }
 

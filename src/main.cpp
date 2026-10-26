@@ -142,7 +142,7 @@ constexpr int32_t MOVE_TOLERANCE_COUNTS = 2;   // close enough: start braking
 constexpr uint32_t MOVE_BRAKE_MS = 300;        // both inputs low (short-circuit brake), then coast
 enum class MovePhase : uint8_t { Idle = 0, Moving = 1, Braking = 2, Done = 3, Aborted = 4 };
 
-constexpr const char* FIRMWARE_VERSION = "0.23.0";
+constexpr const char* FIRMWARE_VERSION = "0.23.1";
 
 // Protocol (one message per line):
 //   ESP32 -> PC : HB,<uptime_ms>               heartbeat
@@ -344,6 +344,7 @@ const char* resetReasonName(esp_reset_reason_t reason) {
 constexpr const char* WIFI_HOSTNAME = "esp32-robot";
 constexpr uint16_t WS_PORT = 81;
 constexpr size_t WS_OUT_MAX = 16384;   // drop output beyond this if Wi-Fi stalls
+constexpr uint32_t WS_FLUSH_MS = 40;   // batch lines into one frame per 40 ms
 
 WebSocketsServer ws(WS_PORT);
 String wsOut;                // lines waiting for the next flush
@@ -431,6 +432,7 @@ void startWifi() {
     return;
   }
   WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);   // modem sleep adds 100-300 ms of lag; the motors draw far more anyway
   WiFi.setHostname(WIFI_HOSTNAME);
   WiFi.setAutoReconnect(true);
   WiFi.begin(wifiSsid.c_str(), wifiPass.c_str());
@@ -470,7 +472,10 @@ void serviceWifi() {
     }
     if (!wifiSsid.isEmpty()) printWifi();
   }
-  if (wsOut.length() && wsClients > 0) {   // one frame per pass instead of one per line
+  static uint32_t lastFlush = 0;
+  uint32_t now = millis();
+  if (wsOut.length() && wsClients > 0 && now - lastFlush >= WS_FLUSH_MS) {   // few big frames
+    lastFlush = now;
     ws.broadcastTXT(wsOut);
     wsOut = "";
   } else if (wsClients == 0) {
