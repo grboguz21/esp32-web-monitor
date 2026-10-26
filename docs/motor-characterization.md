@@ -1,4 +1,4 @@
-# Motor 1 characterization
+# Motor characterization
 
 Measured on 22 Oct 2026. These are the numbers the speed controller is built on; if the
 hardware changes, re-run the tools below and compare against this page.
@@ -221,6 +221,33 @@ short-circuit braking (both inputs low, ENA high).
 
 Within 3 counts (6° of the output shaft) every time, and nothing creeps after the brake.
 All of this is with the wheel in the air.
+
+## TT 130 motors (the robot's motors)
+
+The robot now uses two "13 line" TT gear motors (130 motor, Hall AB encoder, rated 6 V, used at
+12 V) on one L298N (motor 1 on channel A, motor 2 on channel B, same ESP32 pins as before).
+Both were set up with the dashboard alone: CPR by hand on the Encoder tab, then one run of the
+Calibration tab each, "medium" response. Wheels in the air, 12 V adapter. Firmware 0.21.0.
+
+| | Motor 1 | Motor 2 |
+|---|---|---|
+| CPR (counts per output rev) | 2548 (2534 and 2548 by hand) | 2526 |
+| Encoder direction flipped | yes | no |
+| Start threshold +/- | 7.6 / 11.2 % | 8.0 / 9.2 % |
+| Stop threshold +/- | 6.5 / 5.5 % | 6.5 / 6.5 % |
+| Top speed | 430 RPM | 430 RPM |
+| tau | 95 ms | 96 ms |
+| K | 43.3 RPM/V | 43.6 RPM/V |
+| kA | 0.00219 | 0.00221 |
+| Kp / Ki (medium) | 0.04007 / 0.4229 | 0.04084 / 0.4244 |
+
+The datasheet says 1:45 and 2340 counts per wheel turn; both motors measure about 2530-2550,
+so the gearbox is closer to 1:48.7. Trust the measurement. With 13 times the counts of the
+GA25-370, speed control holds 50 RPM smoothly. Keep targets under about 350 RPM for headroom.
+
+The full profiles (curves included) are backed up in
+[`data/profiles.json`](data/profiles.json). `tools/profiles.py backup` refreshes it,
+`tools/profiles.py restore` puts it back on a board (dashboard disconnected).
 
 ## Re-running
 
