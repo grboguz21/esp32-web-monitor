@@ -597,7 +597,7 @@ function handleLine(line) {
   if (type === 'DRIVE' && fields.length === 8) {
     const [active, t1, t2, s1, s2, p1, p2, corr] = fields.map(Number);
     drive = { active: active === 1, target: [t1, t2], speed: [s1, s2], pos: [p1, p2], corr };
-    if (drive.active || driveCmd) {
+    if (drive.active) {   // only live numbers: the first reports after a press can still be the last run's
       const f = driveFwd();
       driveRpmChart.push(1, s1 * f[0]);
       driveRpmChart.push(2, s2 * f[1]);
