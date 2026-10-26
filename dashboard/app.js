@@ -1416,11 +1416,14 @@ const driveDistChart = new LiveChart(document.getElementById('driveDistChart'), 
 });
 
 const driveFwd = () => [Number(driveEls.fwd1.value), Number(driveEls.fwd2.value)];
-// Distance difference in the robot's frame: + means motor 1's wheel has gone further forward
+// The difference the sync works on: how much further motor 1's wheel has gone in the way
+// it is being driven. Straight, that is the forward distance difference; turning on the
+// spot, the difference in how far each wheel has turned (both should match either way).
+let driveSigns = [1, 1];   // each motor's direction in the last drive, kept after it stops
 function driveDistMm() {
   if (!drive) return 0;
-  const f = driveFwd();
-  const revs = drive.pos[0] * f[0] - drive.pos[1] * f[1];
+  for (const i of [0, 1]) if (drive.target[i] !== 0) driveSigns[i] = Math.sign(drive.target[i]);
+  const revs = drive.pos[0] * driveSigns[0] - drive.pos[1] * driveSigns[1];
   return revs * Math.PI * mvWheelM() * 1000;
 }
 
