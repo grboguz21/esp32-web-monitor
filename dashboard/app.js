@@ -594,6 +594,18 @@ function handleLine(line) {
     return;
   }
 
+  if (type === 'DRIVE' && fields.length === 8) {
+    const [active, t1, t2, s1, s2, p1, p2, corr] = fields.map(Number);
+    drive = { active: active === 1, target: [t1, t2], speed: [s1, s2], pos: [p1, p2], corr };
+    if (drive.active || driveCmd) {
+      const f = driveFwd();
+      driveRpmChart.push(1, s1 * f[0]);
+      driveRpmChart.push(2, s2 * f[1]);
+      driveDistChart.push('diff', driveDistMm());
+    }
+    return;
+  }
+
   if (type === 'DUTYOUT' && fields.length === 2) {
     const [d1, d2] = fields.map(Number);
     motorDuty[1] = d1;
@@ -916,6 +928,7 @@ function renderMove(state) {
 
 function renderSpd(state) {
   renderCal(state);
+  renderDrive(state);
   renderProfile();
   const supported = state === 'online' && spd !== null;
   const running = supported && spdRunning();
@@ -1359,6 +1372,152 @@ const dutyRunning = () => simTimer !== null || (port && testState === 1 && testO
 for (const el of [els.testDuty1, els.testDuty2]) {
   el.addEventListener('change', () => { if (dutyRunning()) startTest(); });
 }
+
+// ---------- Drive ----------
+// Both speed loops at once (DRIVE). Buttons work in the robot's frame: each motor's forward
+// sign and which one is the left wheel are set once on the card and kept in this browser.
+
+const DRIVE_STORAGE_KEY = 'esp32-dashboard-drive';
+let drive = null;      // latest DRIVE report: { active, target, speed, pos, corr }
+let driveCmd = null;   // button held: 'fwd' | 'back' | 'left' | 'right'
+let driveSentAt = 0;   // performance.now() of the last DRIVE sent
+const driveEls = {
+  badge: document.getElementById('driveBadge'),
+  speed: document.getElementById('driveSpeed'),
+  sync: document.getElementById('driveSyncGain'),
+  fwd1: document.getElementById('driveFwd1'),
+  fwd2: document.getElementById('driveFwd2'),
+  left: document.getElementById('driveLeft'),
+  stop: document.getElementById('driveStopBtn'),
+  pad: document.querySelectorAll('[data-drive]'),
+  m1: document.getElementById('driveM1'),
+  m1Sub: document.getElementById('driveM1Sub'),
+  m2: document.getElementById('driveM2'),
+  m2Sub: document.getElementById('driveM2Sub'),
+  diff: document.getElementById('driveDiff'),
+  corr: document.getElementById('driveCorr'),
+  dist: document.getElementById('driveDist'),
+  distSub: document.getElementById('driveDistSub'),
+};
+const driveRpmChart = new LiveChart(document.getElementById('driveRpmChart'), {
+  series: motorSeries,
+  legend: document.getElementById('driveRpmLegend'),
+  format: (v) => `${Math.round(v)} RPM`,
+  minSpan: 50,
+  windowMs: 20000,
+  labels: chartLabels,
+});
+const driveDistChart = new LiveChart(document.getElementById('driveDistChart'), {
+  series: [{ key: 'diff', label: () => t('driveDistDiff'), short: '', color: '--series-3' }],
+  format: (v) => `${num(v, 1)} mm`,
+  minSpan: 4,
+  windowMs: 20000,
+  labels: chartLabels,
+});
+
+const driveFwd = () => [Number(driveEls.fwd1.value), Number(driveEls.fwd2.value)];
+// Distance difference in the robot's frame: + means motor 1's wheel has gone further forward
+function driveDistMm() {
+  if (!drive) return 0;
+  const f = driveFwd();
+  const revs = drive.pos[0] * f[0] - drive.pos[1] * f[1];
+  return revs * Math.PI * mvWheelM() * 1000;
+}
+
+function saveDrive() {
+  const data = { speed: driveEls.speed.value, sync: driveEls.sync.value, fwd1: driveEls.fwd1.value, fwd2: driveEls.fwd2.value, left: driveEls.left.value };
+  try { localStorage.setItem(DRIVE_STORAGE_KEY, JSON.stringify(data)); } catch { /* storage unavailable */ }
+}
+function loadDrive() {
+  let data = null;
+  try { data = JSON.parse(localStorage.getItem(DRIVE_STORAGE_KEY)); } catch { /* storage unavailable */ }
+  // Default: motors face each other, so forward is + on one and − on the other
+  const d = { speed: '150', sync: '60', fwd1: '1', fwd2: '-1', left: '1', ...(data ?? {}) };
+  driveEls.speed.value = d.speed;
+  driveEls.sync.value = d.sync;
+  driveEls.fwd1.value = d.fwd1;
+  driveEls.fwd2.value = d.fwd2;
+  driveEls.left.value = d.left;
+}
+
+// Wheel speeds in the robot's frame, then into each motor's own sign
+function sendDrive(cmd) {
+  const v = Math.max(0, Number(driveEls.speed.value) || 0);
+  const leftIs1 = driveEls.left.value === '1';
+  const robot = {   // [left, right] wheel speed, forward = +
+    fwd: [v, v], back: [-v, -v], left: [-v, v], right: [v, -v],
+  }[cmd];
+  const [w1, w2] = leftIs1 ? robot : [robot[1], robot[0]];
+  const f = driveFwd();
+  const sync = Math.max(0, Number(driveEls.sync.value) || 0);
+  if (port) send(`DRIVE,${w1 * f[0]},${w2 * f[1]},${sync}`);
+}
+
+function startDrive(cmd) {
+  stopSimTest();
+  if (driveCmd === null) {
+    driveRpmChart.clear();
+    driveDistChart.clear();
+  }
+  driveCmd = cmd;
+  driveSentAt = performance.now();
+  sendDrive(cmd);
+  render();
+}
+
+function stopDrive() {
+  if (driveCmd !== null && port) send('STOP');
+  driveCmd = null;
+  render();
+}
+
+function renderDrive(state) {
+  const online = state === 'online';
+  const active = online && drive?.active;
+  // Stopped elsewhere or by the watchdog (after giving the board a moment to report)
+  if (!active && driveCmd !== null && performance.now() - driveSentAt > 600) driveCmd = null;
+  driveEls.badge.textContent = t(active ? 'testRunning' : online ? 'testIdle' : 'sensorWaiting');
+  if (active) driveEls.badge.dataset.level = 'run';
+  else delete driveEls.badge.dataset.level;
+  for (const b of driveEls.pad) {
+    b.disabled = !online;
+    b.setAttribute('aria-pressed', String(active && driveCmd === b.dataset.drive));
+  }
+  driveEls.stop.disabled = !active;
+  const f = driveFwd();
+  for (const [i, el, sub] of [[0, driveEls.m1, driveEls.m1Sub], [1, driveEls.m2, driveEls.m2Sub]]) {
+    el.textContent = drive && online ? `${Math.round(drive.speed[i] * f[i])} RPM` : '—';
+    sub.textContent = active ? t('driveTarget', { rpm: Math.round(drive.target[i] * f[i]) }) : '';
+  }
+  const showNums = drive && online;
+  driveEls.diff.textContent = showNums ? `${Math.round(drive.speed[0] * f[0] - drive.speed[1] * f[1])} RPM` : '—';
+  driveEls.corr.textContent = active
+    ? (Number(driveEls.sync.value) > 0 ? t('driveCorrection', { rpm: num(drive.corr, 1) }) : t('driveSyncOff'))
+    : '';
+  driveEls.dist.textContent = showNums ? `${num(driveDistMm(), 1)} mm` : '—';
+  driveEls.distSub.textContent = showNums
+    ? `${t('driveTurns', { n: num(drive.pos[0] * f[0], 2) })} · ${t('driveTurns', { n: num(drive.pos[1] * f[1], 2) })}`
+    : '';
+}
+
+for (const b of driveEls.pad) b.addEventListener('click', () => startDrive(b.dataset.drive));
+driveEls.stop.addEventListener('click', stopDrive);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') stopDrive(); });
+// Changing the speed or sync while driving applies right away
+for (const el of [driveEls.speed, driveEls.sync]) {
+  el.addEventListener('change', () => {
+    saveDrive();
+    if (driveCmd) sendDrive(driveCmd);
+  });
+}
+for (const el of [driveEls.fwd1, driveEls.fwd2, driveEls.left]) {
+  el.addEventListener('change', () => {
+    saveDrive();
+    if (driveCmd) sendDrive(driveCmd);
+    render();
+  });
+}
+loadDrive();
 
 // ---------- Calibration ----------
 // Runs the same measurements as tools/kv_sweep.py and tools/step_test.py from the page, on
@@ -1821,6 +1980,7 @@ I18N.onChange(() => {
   renderWiring();
   mvChart.renderLegend();
   mvSpeedChart.renderLegend();
+  driveRpmChart.renderLegend();
   renderCalMotors();
   renderMoveMotors();
   dutyChart.renderLegend();

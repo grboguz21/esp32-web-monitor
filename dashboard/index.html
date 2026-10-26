@@ -407,6 +407,60 @@
             <div class="wiring" hidden></div>
           </div>
         </section>
+
+        <section class="card drive-card" id="driveCard">
+          <div class="card-head">
+            <h2 data-help="drive"><span data-i18n="driveTitle">Drive</span></h2>
+            <span class="badge" id="driveBadge"></span>
+          </div>
+          <div class="drive-top">
+            <div class="drive-settings">
+              <label class="field"><span data-i18n="driveSpeed">Speed (RPM)</span>
+                <input id="driveSpeed" type="number" min="20" max="400" step="10" value="150">
+              </label>
+              <label class="field"><span data-i18n="driveSyncGain">Sync (RPM per turn)</span>
+                <input id="driveSyncGain" type="number" min="0" max="500" step="10" value="60">
+              </label>
+              <label class="field"><span data-i18n="driveFwd1">Motor 1 forward</span>
+                <select id="driveFwd1"><option value="1">+</option><option value="-1">−</option></select>
+              </label>
+              <label class="field"><span data-i18n="driveFwd2">Motor 2 forward</span>
+                <select id="driveFwd2"><option value="1">+</option><option value="-1">−</option></select>
+              </label>
+              <label class="field"><span data-i18n="driveLeft">Left wheel</span>
+                <select id="driveLeft"><option value="1">Motor 1</option><option value="2">Motor 2</option></select>
+              </label>
+            </div>
+            <div class="drive-pad" role="group">
+              <button class="btn btn-secondary" data-drive="fwd" style="grid-area: f"><svg viewBox="0 0 16 16" aria-hidden="true" style="transform: rotate(0deg)"><path d="M8 2.5 13.5 9h-3.5v4.5h-4V9H2.5z" fill="currentColor"/></svg><span data-i18n="driveFwd">Forward</span></button>
+              <button class="btn btn-secondary" data-drive="left" style="grid-area: l"><svg viewBox="0 0 16 16" aria-hidden="true" style="transform: rotate(-90deg)"><path d="M8 2.5 13.5 9h-3.5v4.5h-4V9H2.5z" fill="currentColor"/></svg><span data-i18n="driveLeftBtn">Left</span></button>
+              <button class="btn btn-danger" id="driveStopBtn" style="grid-area: s"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="3" width="10" height="10" rx="1.5" fill="currentColor"/></svg><span data-i18n="testStop">Stop</span></button>
+              <button class="btn btn-secondary" data-drive="right" style="grid-area: r"><svg viewBox="0 0 16 16" aria-hidden="true" style="transform: rotate(90deg)"><path d="M8 2.5 13.5 9h-3.5v4.5h-4V9H2.5z" fill="currentColor"/></svg><span data-i18n="driveRightBtn">Right</span></button>
+              <button class="btn btn-secondary" data-drive="back" style="grid-area: b"><svg viewBox="0 0 16 16" aria-hidden="true" style="transform: rotate(180deg)"><path d="M8 2.5 13.5 9h-3.5v4.5h-4V9H2.5z" fill="currentColor"/></svg><span data-i18n="driveBack">Back</span></button>
+            </div>
+          </div>
+          <div class="tiles drive-tiles">
+            <div class="tile"><div class="tile-label">Motor 1</div><div class="tile-value" id="driveM1">—</div><div class="tile-sub" id="driveM1Sub"></div></div>
+            <div class="tile"><div class="tile-label">Motor 2</div><div class="tile-value" id="driveM2">—</div><div class="tile-sub" id="driveM2Sub"></div></div>
+            <div class="tile"><div class="tile-label" data-i18n="driveSpeedDiff">Speed difference</div><div class="tile-value" id="driveDiff">—</div><div class="tile-sub" id="driveCorr"></div></div>
+            <div class="tile"><div class="tile-label" data-i18n="driveDistDiff">Distance difference</div><div class="tile-value" id="driveDist">—</div><div class="tile-sub" id="driveDistSub"></div></div>
+          </div>
+          <div class="chart-pair">
+            <div>
+              <div class="card-head">
+                <h3 class="chart-title" data-i18n="driveRpmChart">Wheel speed, forward = + (RPM)</h3>
+                <div class="chart-legend" id="driveRpmLegend"></div>
+              </div>
+              <div class="chart" id="driveRpmChart"></div>
+            </div>
+            <div>
+              <div class="card-head">
+                <h3 class="chart-title" data-i18n="driveDistChart">Distance difference (mm)</h3>
+              </div>
+              <div class="chart" id="driveDistChart"></div>
+            </div>
+          </div>
+        </section>
       </div>
 
       <div class="tab-panel" data-panel="pid" hidden>

@@ -125,7 +125,12 @@ struct MotorProfile {
   FfTable ffMinus;
 };
 
-enum class RunMode : uint8_t { OpenLoop = 0, Feedforward = 1, FeedforwardPi = 2, Move = 3 };
+enum class RunMode : uint8_t { OpenLoop = 0, Feedforward = 1, FeedforwardPi = 2, Move = 3, Drive = 4 };
+
+// Drive: both speed loops at once, each with its own profile. With sync on, the wheel that
+// has turned further slows down and the other speeds up, so equal targets also mean equal
+// distance (the robot keeps straight). The correction is capped at a share of the target.
+constexpr float SYNC_MAX_SHARE = 0.2f;
 
 // Move: drive a set number of encoder counts with a trapezoidal speed profile (accelerate,
 // cruise, decelerate so it can stop in the distance left), run by the speed loop, then brake
@@ -134,7 +139,7 @@ constexpr int32_t MOVE_TOLERANCE_COUNTS = 2;   // close enough: start braking
 constexpr uint32_t MOVE_BRAKE_MS = 300;        // both inputs low (short-circuit brake), then coast
 enum class MovePhase : uint8_t { Idle = 0, Moving = 1, Braking = 2, Done = 3, Aborted = 4 };
 
-constexpr const char* FIRMWARE_VERSION = "0.21.0";
+constexpr const char* FIRMWARE_VERSION = "0.22.0";
 
 // Protocol (one message per line):
 //   ESP32 -> PC : HB,<uptime_ms>               heartbeat
@@ -159,6 +164,7 @@ constexpr const char* FIRMWARE_VERSION = "0.21.0";
 //                 FF,<motor>,<+|->,<rpm>:<duty>;...   that motor's feedforward curve
 //                 SAVED,<motor>,<ok>               profile written to flash
 //                 MOVE,<phase>,<target_counts>,<position_counts>,<profile_rpm>,<final_error_counts>
+//                 DRIVE,<active>,<target1>,<target2>,<rpm1>,<rpm2>,<rev1>,<rev2>,<correction_rpm>
 //                 (phase 0 idle, 1 moving, 2 braking, 3 done, 4 aborted; position from the start)
 //                 (speed control of the running motor; mode 0 open loop, 1 FF, 2 FF + PI)
 //                 L,<t_us>,<duty>,<count1>,<count2>,<target_rpm>,<ref_rpm>,<speed_rpm>
@@ -170,6 +176,8 @@ constexpr const char* FIRMWARE_VERSION = "0.21.0";
 //                                              drive one motor: duty -100..100 %, + = IN1, - = IN2;
 //                                              target 3 is the onboard LED (brightness = |duty|);
 //                                              duration_ms 0 runs until STOP
+//                 DRIVE,<rpm1>,<rpm2>[,<sync>]  both speed loops at once (each motor's own sign);
+//                                              sync = RPM correction per rev of difference, 0 off
 //                 DUTY,<duty1>,<duty2>,<duration_ms>
 //                                              drive both motors open loop at once (0 = coast)
 //                 STOP                         stop the motor
@@ -215,6 +223,9 @@ struct MotorRun {
   float moveMaxRpm = 0;
   float moveAccel = 0;        // RPM per second
   uint32_t moveSeq = 0;       // bumped by every MOVE so loop() notices a new one
+  float driveRpm[MOTOR_COUNT] = {};   // drive mode: each motor's target, in its own direction
+  float syncGain = 0;         // RPM of correction per revolution of difference; 0 = off
+  uint32_t driveSeq = 0;      // bumped by every DRIVE that starts a new run
   uint32_t durationMs = 0;    // 0 = until STOP
   uint32_t startMs = 0;
 };
@@ -248,6 +259,16 @@ struct MoveStatus {
   int32_t finalErrorCounts = 0;
 };
 MoveStatus moveStatus;
+
+struct DriveStatus {
+  bool active = false;
+  float target[MOTOR_COUNT] = {};
+  float speed[MOTOR_COUNT] = {};
+  float pos[MOTOR_COUNT] = {};   // revolutions since the drive started, motor's own direction
+  float correction = 0;          // RPM taken from the leading wheel and given to the other
+};
+DriveStatus driveStatus;
+uint32_t driveSeqCounter = 0;
 uint32_t moveSeqCounter = 0;
 
 struct EncoderStatus {
@@ -494,6 +515,25 @@ void handleCommand(const String& cmd) {
       motorRun.moveMaxRpm = maxRpm;
       motorRun.moveAccel = accel;
       motorRun.moveSeq = ++moveSeqCounter;
+      motorRun.durationMs = 0;
+      motorRun.startMs = millis();
+      lastPingMs = millis();
+      runState = RunState::Running;
+      portEXIT_CRITICAL(&runMux);
+    }
+  } else if (cmd.startsWith("DRIVE,")) {
+    float r1, r2, sync = 0;
+    int n = sscanf(cmd.c_str(), "DRIVE,%f,%f,%f", &r1, &r2, &sync);
+    if (n >= 2 && sync >= 0) {
+      portENTER_CRITICAL(&runMux);
+      bool continuing = runState == RunState::Running && motorRun.mode == RunMode::Drive;
+      motorRun.motor = ALL_MOTORS;
+      motorRun.mode = RunMode::Drive;
+      motorRun.driveRpm[0] = constrain(r1, -profiles[0].maxRpm, profiles[0].maxRpm);
+      motorRun.driveRpm[1] = constrain(r2, -profiles[1].maxRpm, profiles[1].maxRpm);
+      motorRun.syncGain = sync;
+      // a new speed while driving keeps the distance count, so sync carries on across changes
+      if (!continuing) motorRun.driveSeq = ++driveSeqCounter;
       motorRun.durationMs = 0;
       motorRun.startMs = millis();
       lastPingMs = millis();
@@ -832,6 +872,12 @@ void sendMotorRun() {
   portEXIT_CRITICAL(&runMux);
   Serial.printf("MOVE,%u,%ld,%ld,%.1f,%ld\n", (unsigned)mv.phase, (long)mv.targetCounts,
                 (long)mv.positionCounts, mv.profileRpm, (long)mv.finalErrorCounts);
+
+  portENTER_CRITICAL(&runMux);
+  DriveStatus dr = driveStatus;
+  portEXIT_CRITICAL(&runMux);
+  Serial.printf("DRIVE,%d,%.1f,%.1f,%.1f,%.1f,%.4f,%.4f,%.1f\n", dr.active ? 1 : 0, dr.target[0],
+                dr.target[1], dr.speed[0], dr.speed[1], dr.pos[0], dr.pos[1], dr.correction);
 }
 
 void sendLog() {
@@ -1086,6 +1132,9 @@ void runMotors() {
   static uint32_t nextTickUs = 0;
   static PiState pi;
   static MoveRuntime mv;
+  static PiState drivePi[MOTOR_COUNT];
+  static int64_t driveStart[MOTOR_COUNT] = {};
+  static uint32_t driveSeqSeen = 0;
   uint32_t tickUs = micros();
   if (nextTickUs != 0 && (int32_t)(tickUs - nextTickUs) < 0) return;
   if (nextTickUs == 0 || (int32_t)(tickUs - nextTickUs) > (int32_t)CONTROL_PERIOD_US) {
@@ -1106,8 +1155,19 @@ void runMotors() {
   bool running = runState == RunState::Running;
   bool supplyFresh = supplyMeasuredMs != 0 && now - supplyMeasuredMs < SUPPLY_STALE_MS;
   const MotorProfile& prof = profiles[run.motor < (int)MOTOR_COUNT ? run.motor : 0];
-  Gains gains = {prof.kp, prof.ki, prof.ka, prof.tauRefS, supplyFresh ? measuredSupplyV : SUPPLY_V,
+  float supplyV = supplyFresh ? measuredSupplyV : SUPPLY_V;
+  Gains gains = {prof.kp, prof.ki, prof.ka, prof.tauRefS, supplyV,
                  prof.kickPlus, prof.kickMinus, prof.ffPlus, prof.ffMinus};
+  bool driving = running && run.mode == RunMode::Drive;
+  Gains driveGains[MOTOR_COUNT];
+  float cprs[MOTOR_COUNT];
+  if (driving) {
+    for (size_t i = 0; i < MOTOR_COUNT; i++) {
+      const MotorProfile& p = profiles[i];
+      driveGains[i] = {p.kp, p.ki, p.ka, p.tauRefS, supplyV, p.kickPlus, p.kickMinus, p.ffPlus, p.ffMinus};
+      cprs[i] = motorCpr[i];
+    }
+  }
   portEXIT_CRITICAL(&runMux);
 
   // Measure first, then decide this tick's duty
@@ -1130,14 +1190,65 @@ void runMotors() {
   portENTER_CRITICAL(&runMux);
   moveStatus = {mv.phase, mv.targetCounts, mv.positionCounts, mv.profileRpm, mv.finalErrorCounts};
   portEXIT_CRITICAL(&runMux);
-  bool allActive = running && run.motor == ALL_MOTORS;
+
+  // Drive: one speed loop per motor, the targets nudged by the distance difference
+  float driveDuty[MOTOR_COUNT] = {};
+  DriveStatus ds;
+  if (driving) {
+    int64_t count[MOTOR_COUNT];
+    portENTER_CRITICAL(&runMux);
+    for (size_t i = 0; i < MOTOR_COUNT; i++) count[i] = encoderStatus[i].count;
+    portEXIT_CRITICAL(&runMux);
+    if (run.driveSeq != driveSeqSeen) {   // a new drive: distances count from here
+      driveSeqSeen = run.driveSeq;
+      for (size_t i = 0; i < MOTOR_COUNT; i++) {
+        drivePi[i] = PiState();
+        driveStart[i] = count[i];
+      }
+    }
+    float t0 = run.driveRpm[0], t1 = run.driveRpm[1];
+    float pos0 = (count[0] - driveStart[0]) / cprs[0];
+    float pos1 = (count[1] - driveStart[1]) / cprs[1];
+    float correction = 0;
+    // Sync only makes sense when both wheels should cover the same distance
+    if (run.syncGain > 0 && t0 != 0 && t1 != 0 && fabsf(fabsf(t0) - fabsf(t1)) < 0.5f) {
+      float ahead = (t0 > 0 ? pos0 : -pos0) - (t1 > 0 ? pos1 : -pos1);   // revs motor 1 leads by
+      float cap = SYNC_MAX_SHARE * fabsf(t0);
+      correction = constrain(run.syncGain * ahead, -cap, cap);
+    }
+    float target[MOTOR_COUNT] = {
+      t0 - (t0 > 0 ? 1 : -1) * correction / 2,
+      t1 + (t1 > 0 ? 1 : -1) * correction / 2,
+    };
+    if (t0 == 0) target[0] = 0;
+    if (t1 == 0) target[1] = 0;
+    for (size_t i = 0; i < MOTOR_COUNT; i++) {
+      MotorRun r = run;
+      r.motor = i;
+      r.mode = RunMode::FeedforwardPi;
+      r.targetRpm = target[i];
+      float ff, pid;
+      driveDuty[i] = speedControl(drivePi[i], r, speedRpm[i], driveGains[i], ff, pid);
+    }
+    ds = {true, {target[0], target[1]}, {speedRpm[0], speedRpm[1]}, {pos0, pos1}, correction};
+  } else {
+    for (size_t i = 0; i < MOTOR_COUNT; i++) drivePi[i] = PiState();
+    ds = driveStatus;   // keep the last numbers on screen, marked inactive
+    ds.active = false;
+  }
+  portENTER_CRITICAL(&runMux);
+  driveStatus = ds;
+  portEXIT_CRITICAL(&runMux);
+
+  bool allActive = running && run.motor == ALL_MOTORS && run.mode == RunMode::OpenLoop;
   float applied[MOTOR_COUNT];
   for (size_t i = 0; i < MOTOR_COUNT; i++) {
     bool active = motorActive && i == (size_t)run.motor;
-    applied[i] = allActive ? run.duties[i] : active ? duty : 0;
-    applyDuty(i, applied[i], active || (allActive && applied[i] != 0));
+    applied[i] = driving ? driveDuty[i] : allActive ? run.duties[i] : active ? duty : 0;
+    applyDuty(i, applied[i], driving || active || (allActive && applied[i] != 0));
   }
   if (allActive) duty = run.duties[0];
+  if (driving) duty = driveDuty[0];
   bool ledActive = running && run.motor == (int)MOTOR_COUNT;
   float ledDuty = ledActive ? fabsf(run.duty) : 0;   // the LED has no direction
   ledcWrite(LED_PIN, (uint32_t)(ledDuty / 100.0f * PWM_MAX + 0.5f));
