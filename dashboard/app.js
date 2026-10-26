@@ -14,6 +14,13 @@ const KNOWN_CHIPS = {
 
 const els = {
   connectBtn: document.getElementById('connectBtn'),
+  wifiHost: document.getElementById('wifiHost'),
+  wifiConnectBtn: document.getElementById('wifiConnectBtn'),
+  wifiStatus: document.getElementById('wifiStatus'),
+  wifiSsid: document.getElementById('wifiSsid'),
+  wifiPass: document.getElementById('wifiPass'),
+  wifiSaveBtn: document.getElementById('wifiSaveBtn'),
+  wifiForgetBtn: document.getElementById('wifiForgetBtn'),
   addPortBtn: document.getElementById('addPortBtn'),
   portSelect: document.getElementById('portSelect'),
   unsupported: document.getElementById('unsupported'),
@@ -129,6 +136,8 @@ let device = null;      // { name, version }
 let info = null;        // chip info and reset reason, from INFO
 let health = null;      // latest HEALTH values
 let battery = null;     // { volts, measured } from BATT
+let wifi = null;        // { state 0 off / 1 joining / 2 on, ssid, ip, rssi } from WIFI
+const WIFI_HOST_STORAGE_KEY = 'esp32-dashboard-wifi-host';
 // Motor profiles live on the board (flash); the page reads them on connect and edits them
 const boardProfile = { 1: null, 2: null };   // { cpr, invert, kickPlus, kickMinus, kp, ki, tauMs, ka, maxRpm, ffPlus, ffMinus }
 const profileSaved = { 1: false, 2: false };
@@ -261,6 +270,9 @@ const encChart = new LiveChart(document.getElementById('encChart'), {
   labels: chartLabels,
 });
 
+// Text from the board (network names) goes into innerHTML only through this
+const escapeHtml = (text) => String(text).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+
 // Numbers in the page's language: 1,25 in Turkish, 1.25 in English
 const num = (v, digits) => v.toLocaleString(I18N.lang === 'tr' ? 'tr-TR' : 'en-US',
   { minimumFractionDigits: digits, maximumFractionDigits: digits });
@@ -348,8 +360,59 @@ async function connect() {
 }
 
 async function disconnect() {
+  if (port?.ws) {   // Wi-Fi: closing the socket runs the same cleanup
+    port.ws.close();
+    return;
+  }
   // Cancelling the reader ends readLoop, which then closes the port
   if (reader) await reader.cancel().catch(() => {});
+}
+
+function handleLines(lines) {
+  for (const line of lines) {
+    // One bad message must not stop the read loop
+    try {
+      handleLine(sanitize(line));
+    } catch (err) {
+      log(t('log.badLine', { msg: err.message }));
+    }
+  }
+}
+
+// Wi-Fi: the board's WebSocket on port 81 carries the same lines as USB
+function connectWifi() {
+  const host = els.wifiHost.value.trim();
+  if (!host || port) return;
+  try { localStorage.setItem(WIFI_HOST_STORAGE_KEY, host); } catch { /* storage unavailable */ }
+  let ws;
+  try {
+    ws = new WebSocket(`ws://${host}:81/`);
+  } catch {
+    log(t('log.wsFailed', { host }));
+    return;
+  }
+  let opened = false;
+  let buffer = '';
+  ws.onopen = () => {
+    opened = true;
+    stopDemo();
+    port = { ws, host };
+    log(t('log.wsOpened', { host }));
+    send('HELLO?');
+    render();
+  };
+  ws.onmessage = (e) => {
+    buffer += typeof e.data === 'string' ? e.data : '';
+    const lines = buffer.split('\n');
+    buffer = lines.pop();
+    handleLines(lines);
+  };
+  ws.onerror = () => { if (!opened) log(t('log.wsFailed', { host })); };
+  ws.onclose = () => {
+    if (!opened) return;
+    log(t('log.wsClosed'));
+    closePort();
+  };
 }
 
 async function readLoop() {
@@ -371,14 +434,7 @@ async function readLoop() {
         lines.shift();
         firstLine = false;
       }
-      for (const line of lines) {
-        // One bad message must not stop the read loop
-        try {
-          handleLine(sanitize(line));
-        } catch (err) {
-          log(t('log.badLine', { msg: err.message }));
-        }
-      }
+      handleLines(lines);
     }
   } catch (err) {
     log(t('log.readError', { msg: err.message }));
@@ -389,11 +445,14 @@ async function readLoop() {
 }
 
 async function closePort() {
-  await readableClosed;
-  try {
-    await port.close();
-  } catch {
-    // Port may already be gone (cable unplugged)
+  const wasWifi = Boolean(port?.ws);
+  if (!wasWifi) {
+    await readableClosed;
+    try {
+      await port.close();
+    } catch {
+      // Port may already be gone (cable unplugged)
+    }
   }
   port = null;
   reader = null;
@@ -405,6 +464,7 @@ async function closePort() {
   resetEncData();
   spd = null;
   battery = null;
+  wifi = null;
   for (const m of MOTORS) {
     boardProfile[m] = null;
     profileSaved[m] = false;
@@ -423,6 +483,10 @@ async function closePort() {
 let sendQueue = Promise.resolve();
 
 function send(text) {
+  if (port?.ws) {   // Wi-Fi: the socket keeps order itself
+    if (port.ws.readyState === WebSocket.OPEN) port.ws.send(text + '\n');
+    return Promise.resolve();
+  }
   sendQueue = sendQueue.then(async () => {
     if (!port?.writable) return;
     const writer = port.writable.getWriter();
@@ -461,6 +525,7 @@ function handleLine(line) {
     device = { name: fields[0], version: fields[1] };
     log(t('log.identified', device));
     for (const m of MOTORS) send(`PROFILE?,${m}`);   // the board keeps each motor's settings
+    send('WIFI?');
     return;
   }
 
@@ -500,6 +565,12 @@ function handleLine(line) {
     const m = Number(fields[0]);
     profileSaved[m] = fields[1] === '1';
     log(t(profileSaved[m] ? 'log.saved' : 'log.saveFailed', { m }));
+    return;
+  }
+
+  if (type === 'WIFI' && fields.length === 4) {
+    const [state, ssid, ip, rssi] = fields;
+    wifi = { state: Number(state), ssid, ip, rssi: Number(rssi) };
     return;
   }
 
@@ -642,6 +713,16 @@ function render() {
 
   els.connectBtn.textContent = port ? t('disconnect') : t('connect');
   els.connectBtn.disabled = !port && knownPorts.length === 0;
+  els.wifiConnectBtn.disabled = Boolean(port);
+  els.wifiHost.disabled = Boolean(port);
+  els.wifiSsid.placeholder = t('wifiSsid');
+  els.wifiPass.placeholder = t('wifiPass');
+  els.wifiSaveBtn.disabled = !port || !els.wifiSsid.value.trim();
+  els.wifiForgetBtn.disabled = !port || !wifi || wifi.state === 0;
+  els.wifiStatus.innerHTML = !port || !wifi ? t('wifiUnknown')
+    : wifi.state === 0 ? t('wifiOff')
+    : wifi.state === 1 ? t('wifiJoining', { ssid: escapeHtml(wifi.ssid) })
+    : t('wifiOn', { ssid: `<b>${escapeHtml(wifi.ssid)}</b>`, ip: `<b>${escapeHtml(wifi.ip)}</b>`, rssi: wifi.rssi });
   els.portSelect.disabled = !!port || knownPorts.length === 0;
   els.addPortBtn.disabled = !!port;
 
@@ -979,13 +1060,26 @@ function log(message) {
 
 // ---------- Init ----------
 
+// Wi-Fi works in any browser; USB needs Web Serial
+try { els.wifiHost.value = localStorage.getItem(WIFI_HOST_STORAGE_KEY) || els.wifiHost.value; } catch { /* storage unavailable */ }
+els.wifiConnectBtn.addEventListener('click', connectWifi);
+els.wifiHost.addEventListener('keydown', (e) => { if (e.key === 'Enter') connectWifi(); });
+els.wifiSaveBtn.addEventListener('click', () => {
+  const ssid = els.wifiSsid.value.trim();
+  if (!port || !ssid || ssid.includes(',')) return;
+  send(`WIFISET,${ssid},${els.wifiPass.value}`);
+  els.wifiPass.value = '';
+});
+els.wifiForgetBtn.addEventListener('click', () => { if (port) send('WIFIOFF'); });
+els.wifiSsid.addEventListener('input', render);
+els.connectBtn.addEventListener('click', () => (port ? disconnect() : connect()));
+setInterval(render, 250);
+
 if (!('serial' in navigator)) {
   els.unsupported.hidden = false;
-  els.connectBtn.disabled = true;
   els.addPortBtn.disabled = true;
   els.portSelect.disabled = true;
 } else {
-  els.connectBtn.addEventListener('click', () => (port ? disconnect() : connect()));
   els.addPortBtn.addEventListener('click', addPort);
   // A previously allowed device was plugged in or unplugged
   navigator.serial.addEventListener('connect', () => refreshPorts());
@@ -994,7 +1088,6 @@ if (!('serial' in navigator)) {
     if (!port) refreshPorts();
   });
   refreshPorts();
-  setInterval(render, 250);
 }
 
 els.clearLogBtn.addEventListener('click', () => { els.log.textContent = ''; });

@@ -35,6 +35,20 @@
         <select id="portSelect"></select>
         <button id="addPortBtn" class="btn btn-secondary" data-i18n="addPort">Add port…</button>
         <button id="connectBtn" class="btn">Connect</button>
+        <div class="or-line"><span data-i18n="orWifi">or over Wi-Fi</span></div>
+        <input id="wifiHost" class="text-input" type="text" spellcheck="false" autocomplete="off" value="esp32-robot.local" aria-label="Wi-Fi address">
+        <button id="wifiConnectBtn" class="btn btn-secondary" data-i18n="wifiConnect">Connect over Wi-Fi</button>
+      </section>
+
+      <section class="panel wifi-panel">
+        <h2 data-help="wifi"><span data-i18n="wifiTitle">Wi-Fi</span></h2>
+        <div class="wifi-status" id="wifiStatus">—</div>
+        <input id="wifiSsid" class="text-input" type="text" spellcheck="false" autocomplete="off" placeholder="Network name">
+        <input id="wifiPass" class="text-input" type="password" autocomplete="new-password" placeholder="Password">
+        <div class="wifi-buttons">
+          <button id="wifiSaveBtn" class="btn btn-secondary" data-i18n="wifiSave">Save to board</button>
+          <button id="wifiForgetBtn" class="btn btn-ghost" data-i18n="wifiForget">Forget</button>
+        </div>
       </section>
 
       <section class="panel">

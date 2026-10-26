@@ -4,6 +4,9 @@
 #include <ESP32Encoder.h>
 #include <esp_system.h>
 #include <Preferences.h>
+#include <WiFi.h>
+#include <ESPmDNS.h>
+#include <WebSocketsServer.h>
 
 constexpr uint32_t SERIAL_BAUD = 460800;   // room for the 200 Hz log next to the telemetry
 constexpr uint32_t HEARTBEAT_INTERVAL_MS = 500;
@@ -11,7 +14,7 @@ constexpr uint32_t HEALTH_INTERVAL_MS = 1000;
 
 // Dashboard communication runs on core 0 so loop() keeps core 1 to itself
 constexpr BaseType_t TELEMETRY_CORE = 0;
-constexpr uint32_t TELEMETRY_STACK_BYTES = 6144;
+constexpr uint32_t TELEMETRY_STACK_BYTES = 12288;   // Wi-Fi and the WebSocket server run here too
 constexpr UBaseType_t TELEMETRY_PRIORITY = 1;
 constexpr uint32_t TELEMETRY_PERIOD_MS = 5;
 
@@ -139,7 +142,7 @@ constexpr int32_t MOVE_TOLERANCE_COUNTS = 2;   // close enough: start braking
 constexpr uint32_t MOVE_BRAKE_MS = 300;        // both inputs low (short-circuit brake), then coast
 enum class MovePhase : uint8_t { Idle = 0, Moving = 1, Braking = 2, Done = 3, Aborted = 4 };
 
-constexpr const char* FIRMWARE_VERSION = "0.22.0";
+constexpr const char* FIRMWARE_VERSION = "0.23.0";
 
 // Protocol (one message per line):
 //   ESP32 -> PC : HB,<uptime_ms>               heartbeat
@@ -163,6 +166,7 @@ constexpr const char* FIRMWARE_VERSION = "0.22.0";
 //                 PROFILE,<motor>,<cpr>,<invert>,<kick+>,<kick->,<kp>,<ki>,<tau_ms>,<ka>,<max_rpm>
 //                 FF,<motor>,<+|->,<rpm>:<duty>;...   that motor's feedforward curve
 //                 SAVED,<motor>,<ok>               profile written to flash
+//                 WIFI,<0 off|1 joining|2 on>,<ssid>,<ip>,<rssi_dbm>
 //                 MOVE,<phase>,<target_counts>,<position_counts>,<profile_rpm>,<final_error_counts>
 //                 DRIVE,<active>,<target1>,<target2>,<rpm1>,<rpm2>,<rev1>,<rev2>,<correction_rpm>
 //                 (phase 0 idle, 1 moving, 2 braking, 3 done, 4 aborted; position from the start)
@@ -181,6 +185,7 @@ constexpr const char* FIRMWARE_VERSION = "0.22.0";
 //                 DUTY,<duty1>,<duty2>,<duration_ms>
 //                                              drive both motors open loop at once (0 = coast)
 //                 STOP                         stop the motor
+//                 WIFI?  /  WIFISET,<ssid>,<password>  /  WIFIOFF     home network (kept in flash)
 //                 PROFILE?,<motor>             print that motor's profile (PROFILE + two FF lines)
 //                 GAIN,<kp>,<ki>[,<motor>]     / REF,<tau_ms>,<ka>[,<motor>]: no motor = both
 //                 KICK,<motor>,<plus>,<minus>  start thresholds, %
@@ -336,13 +341,38 @@ const char* resetReasonName(esp_reset_reason_t reason) {
   }
 }
 
+constexpr const char* WIFI_HOSTNAME = "esp32-robot";
+constexpr uint16_t WS_PORT = 81;
+constexpr size_t WS_OUT_MAX = 16384;   // drop output beyond this if Wi-Fi stalls
+
+WebSocketsServer ws(WS_PORT);
+String wsOut;                // lines waiting for the next flush
+int wsClients = 0;
+String wifiSsid, wifiPass;
+wl_status_t wifiLast = WL_IDLE_STATUS;
+
+class DualOut : public Print {
+ public:
+  size_t write(uint8_t c) override {
+    Serial.write(c);
+    if (wsClients > 0 && wsOut.length() < WS_OUT_MAX) wsOut += (char)c;
+    return 1;
+  }
+  size_t write(const uint8_t* buf, size_t n) override {
+    Serial.write(buf, n);
+    if (wsClients > 0 && wsOut.length() + n < WS_OUT_MAX) wsOut.concat((const char*)buf, n);
+    return n;
+  }
+};
+DualOut out;
+
 void printHello() {
-  Serial.printf("HELLO,%s,%s\n", DEVICE_NAME, FIRMWARE_VERSION);
+  out.printf("HELLO,%s,%s\n", DEVICE_NAME, FIRMWARE_VERSION);
 }
 
 void printInfo() {
   uint64_t mac = ESP.getEfuseMac();
-  Serial.printf("INFO,%s,%u,%u,%lu,%lu,%lu,%02X:%02X:%02X:%02X:%02X:%02X,%s\n",
+  out.printf("INFO,%s,%u,%u,%lu,%lu,%lu,%02X:%02X:%02X:%02X:%02X:%02X,%s\n",
                 ESP.getChipModel(),
                 (unsigned)ESP.getChipRevision(),
                 (unsigned)ESP.getChipCores(),
@@ -352,6 +382,100 @@ void printInfo() {
                 (uint8_t)(mac), (uint8_t)(mac >> 8), (uint8_t)(mac >> 16),
                 (uint8_t)(mac >> 24), (uint8_t)(mac >> 32), (uint8_t)(mac >> 40),
                 resetReasonName(esp_reset_reason()));
+}
+
+// ---------- Wi-Fi ----------
+// Optional: with a network saved (WIFISET), the board joins it as esp32-robot.local and
+// offers the same line protocol over a WebSocket on port 81. Everything printed goes to USB
+// and to connected WebSocket pages; their lines go to the same command handler. All of it
+// runs in the telemetry task on core 0, so the control loop on core 1 is not touched.
+
+void handleCommand(const String& cmd);
+
+void onWsEvent(uint8_t client, WStype_t type, uint8_t* payload, size_t length) {
+  if (type == WStype_CONNECTED) {
+    wsClients++;
+  } else if (type == WStype_DISCONNECTED) {
+    wsClients = max(0, wsClients - 1);
+  } else if (type == WStype_TEXT) {
+    String text((const char*)payload, length);
+    int start = 0;
+    while (start < (int)text.length()) {
+      int end = text.indexOf('\n', start);
+      if (end < 0) end = text.length();
+      String line = text.substring(start, end);
+      line.trim();
+      if (line.length()) handleCommand(line);
+      start = end + 1;
+    }
+  }
+}
+
+void printWifi() {
+  wl_status_t st = WiFi.status();
+  int state = wifiSsid.isEmpty() ? 0 : st == WL_CONNECTED ? 2 : 1;
+  out.printf("WIFI,%d,%s,%s,%d\n", state, wifiSsid.c_str(),
+             state == 2 ? WiFi.localIP().toString().c_str() : "", state == 2 ? (int)WiFi.RSSI() : 0);
+}
+
+void startWifi() {
+  Preferences prefs;
+  if (prefs.begin("wifi", true)) {
+    wifiSsid = prefs.getString("ssid", "");
+    wifiPass = prefs.getString("pass", "");
+    prefs.end();
+  }
+  WiFi.disconnect(true);
+  if (wifiSsid.isEmpty()) {
+    WiFi.mode(WIFI_OFF);
+    return;
+  }
+  WiFi.mode(WIFI_STA);
+  WiFi.setHostname(WIFI_HOSTNAME);
+  WiFi.setAutoReconnect(true);
+  WiFi.begin(wifiSsid.c_str(), wifiPass.c_str());
+}
+
+// WIFISET,<ssid>,<password>   (the password is the rest of the line, commas allowed)
+void setWifi(const String& cmd) {
+  int c1 = cmd.indexOf(',');
+  int c2 = cmd.indexOf(',', c1 + 1);
+  if (c1 < 0 || c2 < 0) return;
+  String ssid = cmd.substring(c1 + 1, c2);
+  String pass = cmd.substring(c2 + 1);
+  Preferences prefs;
+  if (prefs.begin("wifi", false)) {
+    prefs.putString("ssid", ssid);
+    prefs.putString("pass", pass);
+    prefs.end();
+  }
+  startWifi();
+  printWifi();
+}
+
+void serviceWifi() {
+  static bool wsStarted = false;
+  if (!wsStarted && !wifiSsid.isEmpty()) {
+    ws.begin();
+    ws.onEvent(onWsEvent);
+    wsStarted = true;
+  }
+  if (wsStarted) ws.loop();
+  wl_status_t st = WiFi.status();
+  if (st != wifiLast) {   // joined or lost the network
+    wifiLast = st;
+    if (st == WL_CONNECTED) {
+      MDNS.end();
+      if (MDNS.begin(WIFI_HOSTNAME)) MDNS.addService("ws", "tcp", WS_PORT);
+    }
+    if (!wifiSsid.isEmpty()) printWifi();
+  }
+  if (wsOut.length() && wsClients > 0) {   // one frame per pass instead of one per line
+    ws.broadcastTXT(wsOut);
+    wsOut = "";
+  } else if (wsClients == 0) {
+    wsOut = "";
+  }
 }
 
 // ---------- Motor profiles ----------
@@ -416,7 +540,7 @@ void saveProfiles() {
     if (prefs.begin(ns, false)) {
       bool ok = prefs.putBytes("profile", &p, sizeof(p)) == sizeof(p);
       prefs.end();
-      Serial.printf("SAVED,%u,%d\n", (unsigned)(i + 1), ok ? 1 : 0);
+      out.printf("SAVED,%u,%d\n", (unsigned)(i + 1), ok ? 1 : 0);
     }
   }
 }
@@ -427,7 +551,7 @@ void printFfTable(size_t motor, char dir, const FfTable& t) {
     if (k) line += ";";
     line += String(t.points[k].rpm, 1) + ":" + String(t.points[k].duty, 1);
   }
-  Serial.println(line);
+  out.println(line);
 }
 
 void printProfile(size_t motor) {
@@ -436,7 +560,7 @@ void printProfile(size_t motor) {
   float cpr = motorCpr[motor];
   bool invert = encoderInvert[motor];
   portEXIT_CRITICAL(&runMux);
-  Serial.printf("PROFILE,%u,%.2f,%d,%.1f,%.1f,%.5f,%.4f,%.0f,%.5f,%.0f\n", (unsigned)(motor + 1), cpr,
+  out.printf("PROFILE,%u,%.2f,%d,%.1f,%.1f,%.5f,%.4f,%.0f,%.5f,%.0f\n", (unsigned)(motor + 1), cpr,
                 invert ? 1 : 0, p.kickPlus, p.kickMinus, p.kp, p.ki, p.tauRefS * 1000.0f, p.ka, p.maxRpm);
   printFfTable(motor, '+', p.ffPlus);
   printFfTable(motor, '-', p.ffMinus);
@@ -582,6 +706,18 @@ void handleCommand(const String& cmd) {
       }
       portEXIT_CRITICAL(&runMux);
     }
+  } else if (cmd == "WIFI?") {
+    printWifi();
+  } else if (cmd.startsWith("WIFISET,")) {
+    setWifi(cmd);
+  } else if (cmd == "WIFIOFF") {
+    Preferences prefs;
+    if (prefs.begin("wifi", false)) {
+      prefs.clear();
+      prefs.end();
+    }
+    startWifi();
+    printWifi();
   } else if (cmd.startsWith("PROFILE?,")) {
     unsigned motor;
     if (sscanf(cmd.c_str(), "PROFILE?,%u", &motor) == 1 && motor >= 1 && motor <= MOTOR_COUNT) {
@@ -702,7 +838,7 @@ void sendHeartbeat() {
   uint32_t now = millis();
   if (now - lastBeat >= HEARTBEAT_INTERVAL_MS) {
     lastBeat = now;
-    Serial.printf("HB,%lu\n", now);
+    out.printf("HB,%lu\n", now);
   }
 }
 
@@ -724,7 +860,7 @@ void sendHealth() {
   float avgUs = snapshot.count ? (float)snapshot.sumUs / snapshot.count : 0;
   uint32_t loopHz = (uint64_t)snapshot.count * 1000 / elapsed;
 
-  Serial.printf("HEALTH,%lu,%lu,%lu,%.2f,%lu,%lu,%lu\n",
+  out.printf("HEALTH,%lu,%lu,%lu,%.2f,%lu,%lu,%lu\n",
                 (unsigned long)ESP.getFreeHeap(),
                 (unsigned long)ESP.getMinFreeHeap(),
                 (unsigned long)ESP.getMaxAllocHeap(),
@@ -763,7 +899,7 @@ void sendBattery() {
   bool fresh = supplyMeasuredMs != 0 && now - supplyMeasuredMs < SUPPLY_STALE_MS;
   float v = fresh ? measuredSupplyV : SUPPLY_V;
   portEXIT_CRITICAL(&runMux);
-  Serial.printf("BATT,%.2f,%d\n", v, fresh ? 1 : 0);
+  out.printf("BATT,%.2f,%d\n", v, fresh ? 1 : 0);
 }
 
 // Looks for each sensor every SENSOR_PROBE_MS until found, then samples it
@@ -820,13 +956,13 @@ void sendPower() {
       PowerWindow& w = ch.window;
       if (w.count == 0) continue;
       float n = w.count;
-      Serial.printf("POWER,%u,%.3f,%.1f,%.1f,%.3f,%.1f\n", motor,
+      out.printf("POWER,%u,%.3f,%.1f,%.1f,%.3f,%.1f\n", motor,
                     w.sumVoltage / n, w.sumCurrentMa / n, w.sumPowerMw / n,
                     w.minVoltage, w.maxCurrentMa);
       w = PowerWindow();
     } else if (!ch.ready && now - ch.lastReport >= POWER_ABSENT_REPORT_MS) {
       ch.lastReport = now;
-      Serial.printf("POWER,%u,NA\n", motor);
+      out.printf("POWER,%u,NA\n", motor);
     }
   }
 }
@@ -850,40 +986,40 @@ void sendMotorRun() {
     uint32_t elapsed = now - run.startMs;
     remaining = elapsed < run.durationMs ? run.durationMs - elapsed : 0;
   }
-  Serial.printf("RUNOUT,%u,%d,%.1f,%lu\n", (unsigned)state, run.motor + 1, duty,
+  out.printf("RUNOUT,%u,%d,%.1f,%lu\n", (unsigned)state, run.motor + 1, duty,
                 (unsigned long)remaining);
-  Serial.printf("DUTYOUT,%.1f,%.1f\n", duties[0], duties[1]);
+  out.printf("DUTYOUT,%.1f,%.1f\n", duties[0], duties[1]);
 
   portENTER_CRITICAL(&runMux);
   EncoderStatus enc[MOTOR_COUNT];
   for (size_t i = 0; i < MOTOR_COUNT; i++) enc[i] = encoderStatus[i];
   portEXIT_CRITICAL(&runMux);
-  Serial.printf("ENC,%lld,%.0f,%lld,%.0f\n", enc[0].count, enc[0].countsPerSec,
+  out.printf("ENC,%lld,%.0f,%lld,%.0f\n", enc[0].count, enc[0].countsPerSec,
                 enc[1].count, enc[1].countsPerSec);
 
   portENTER_CRITICAL(&runMux);
   ControlStatus ctl = controlStatus;
   portEXIT_CRITICAL(&runMux);
-  Serial.printf("SPD,%u,%.1f,%.1f,%.1f,%.1f,%.1f\n", (unsigned)run.mode, run.targetRpm, ctl.refRpm,
+  out.printf("SPD,%u,%.1f,%.1f,%.1f,%.1f,%.1f\n", (unsigned)run.mode, run.targetRpm, ctl.refRpm,
                 ctl.speedRpm, ctl.ffDuty, ctl.piDuty);
 
   portENTER_CRITICAL(&runMux);
   MoveStatus mv = moveStatus;
   portEXIT_CRITICAL(&runMux);
-  Serial.printf("MOVE,%u,%ld,%ld,%.1f,%ld\n", (unsigned)mv.phase, (long)mv.targetCounts,
+  out.printf("MOVE,%u,%ld,%ld,%.1f,%ld\n", (unsigned)mv.phase, (long)mv.targetCounts,
                 (long)mv.positionCounts, mv.profileRpm, (long)mv.finalErrorCounts);
 
   portENTER_CRITICAL(&runMux);
   DriveStatus dr = driveStatus;
   portEXIT_CRITICAL(&runMux);
-  Serial.printf("DRIVE,%d,%.1f,%.1f,%.1f,%.1f,%.4f,%.4f,%.1f\n", dr.active ? 1 : 0, dr.target[0],
+  out.printf("DRIVE,%d,%.1f,%.1f,%.1f,%.1f,%.4f,%.4f,%.1f\n", dr.active ? 1 : 0, dr.target[0],
                 dr.target[1], dr.speed[0], dr.speed[1], dr.pos[0], dr.pos[1], dr.correction);
 }
 
 void sendLog() {
   LogEntry e;
   while (xQueueReceive(logQueue, &e, 0) == pdTRUE) {
-    Serial.printf("L,%lu,%.1f,%ld,%ld,%.1f,%.1f,%.1f\n", (unsigned long)e.tUs, e.duty,
+    out.printf("L,%lu,%.1f,%ld,%ld,%.1f,%.1f,%.1f\n", (unsigned long)e.tUs, e.duty,
                   (long)e.count[0], (long)e.count[1], e.targetRpm, e.refRpm, e.speedRpm);
   }
 }
@@ -894,7 +1030,9 @@ void telemetryTask(void*) {
   Wire.setClock(I2C_CLOCK_HZ);
   printHello();
   printInfo();
+  startWifi();
   for (;;) {
+    serviceWifi();
     readCommands();
     sendHeartbeat();
     sendHealth();
