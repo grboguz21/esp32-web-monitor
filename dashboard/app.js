@@ -162,6 +162,8 @@ const chartLabels = {
   empty: () => t('noData'),
   none: () => t('noSeries'),
   axis: (s) => (s === 0 ? t('now') : t('axisAgo', { n: num(s, Number.isInteger(s) ? 0 : 1) })),
+  // seconds since the chart started: "15 s", and minutes once past one ("2:05")
+  elapsed: (s) => (s < 60 ? t('axisElapsed', { n: s }) : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`),
   ago: (s) => (s === 0 ? t('now') : t('secAgo', { n: s })),
 };
 const motorSeries = MOTORS.map((m) => ({

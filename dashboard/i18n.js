@@ -397,6 +397,7 @@ const I18N = (() => {
       noSeries: 'Pick a motor in the legend',
       now: 'now',
       axisAgo: '−{n} s',
+      axisElapsed: '{n} s',
       secAgo: '{n} s ago',
     },
 
@@ -793,6 +794,7 @@ const I18N = (() => {
       noSeries: 'Açıklamadan bir motor seç',
       now: 'şimdi',
       axisAgo: '−{n} sn',
+      axisElapsed: '{n} sn',
       secAgo: '{n} sn önce',
     },
   };

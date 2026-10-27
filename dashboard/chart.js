@@ -26,6 +26,7 @@ class LiveChart {
     this.labels = labels;       // { empty(), axis(seconds), ago(seconds) }
     this.data = new Map(series.map((s) => [s.key, []]));
     this.hidden = new Set();    // series keys switched off in the legend
+    this.startT = null;         // when the first point came in: the time axis counts from here
     this.hoverX = null;
 
     this.canvas = document.createElement('canvas');
@@ -70,12 +71,14 @@ class LiveChart {
   push(key, value) {
     const now = performance.now();
     const points = this.data.get(key);
+    if (this.startT === null || [...this.data.values()].every((p) => p.length === 0)) this.startT = now;
     points.push({ t: now, v: value });
     while (points.length && points[0].t < now - this.windowMs) points.shift();
   }
 
   clear(key) {
     for (const [k, points] of this.data) if (!key || k === key) points.length = 0;
+    if (!key) this.startT = null;
   }
 
   draw() {
@@ -135,23 +138,24 @@ class LiveChart {
     const pw = w - pad.left - pad.right;
     const ph = h - pad.top - pad.bottom;
     const now = performance.now();
-    // The time axis spans from the oldest point to now, so a fresh chart fills from the left
-    // edge and widens until it holds the whole window, then scrolls
-    const oldest = Math.min(...active.map((s) => this.data.get(s.key)[0].t));
-    const spanMs = active.length ? Math.min(this.windowMs, Math.max(1000, now - oldest)) : this.windowMs;
-    const x = (t) => pad.left + (1 - (now - t) / spanMs) * pw;
+    // Time axis like a recorder: 0 s (the first point) on the left, the window to its right.
+    // The trace grows rightwards from 0; once it reaches the right edge it scrolls and the
+    // axis counts on (e.g. 12 s ... 32 s)
+    const start = this.startT ?? now;
+    const elapsedMs = now - start;
+    const axisFrom = Math.max(0, elapsedMs - this.windowMs);   // ms since start at the left edge
+    const x = (t) => pad.left + ((t - start - axisFrom) / this.windowMs) * pw;
     const y = (v) => pad.top + (1 - (v - lo) / (hi - lo)) * ph;
 
-    // Time axis: -60 s ... now
     ctx.fillStyle = token('--muted');
     ctx.textBaseline = 'alphabetic';
-    const seconds = spanMs / 1000;
-    const roundS = (v) => (v >= 10 ? Math.round(v) : Math.round(v * 10) / 10);
-    for (const s of [seconds, seconds / 2, 0]) {
-      const px = pad.left + (1 - s / seconds) * pw;
-      ctx.textAlign = s === seconds ? 'left' : s === 0 ? 'right' : 'center';
-      ctx.fillText(this.labels.axis(roundS(s)), px, h - 6);
-    }
+    const seconds = this.windowMs / 1000;
+    const fromS = axisFrom / 1000;
+    const axisLabel = this.labels.elapsed ?? ((v) => `${v} s`);
+    [[0, 'left'], [0.5, 'center'], [1, 'right']].forEach(([f, align]) => {
+      ctx.textAlign = align;
+      ctx.fillText(axisLabel(Math.round(fromS + f * seconds)), pad.left + f * pw, h - 6);
+    });
 
     // Background grid, spaced by pixels so long and short windows look alike: vertical
     // lines on round seconds about 60 px apart, horizontal ones at quarter, half or whole
@@ -162,8 +166,10 @@ class LiveChart {
     ctx.lineWidth = 1;
     ctx.beginPath();
     const gridS = [0.5, 1, 2, 2.5, 5, 10, 15, 30, 60].find((g) => (g / seconds) * pw >= 60) ?? seconds;
-    for (let s = gridS; s < seconds; s += gridS) {
-      const px = Math.round(pad.left + (1 - s / seconds) * pw) + 0.5;
+    // vertical lines sit on round elapsed times, so they scroll with the trace
+    for (let s = Math.ceil(fromS / gridS) * gridS; s < fromS + seconds; s += gridS) {
+      if (s <= fromS) continue;
+      const px = Math.round(pad.left + ((s - fromS) / seconds) * pw) + 0.5;
       ctx.moveTo(px, pad.top);
       ctx.lineTo(px, pad.top + ph);
     }
