@@ -1666,7 +1666,7 @@ function drawCompass(live) {
   ctx.fillStyle = tk('--accent');
   ctx.fill();
   ctx.restore();
-  compassCap.innerHTML = `${t('imuHeading')} · <b>${live ? `${num(imuYaw(), 0)}°` : '—'}</b>`;
+  compassCap.innerHTML = `<span>${t('imuHeading')}</span><b>${live ? `${num(imuYaw(), 0)}°` : '—'}</b>`;
 }
 
 function drawHorizon(live) {
@@ -1737,7 +1737,7 @@ function drawHorizon(live) {
   ctx.lineWidth = 1.5;
   ctx.strokeStyle = tk('--border');
   ctx.stroke();
-  horizonCap.innerHTML = `${t('imuAttitude')} · <b>${live ? `${num(imu.pitch, 1)}° / ${num(imu.roll, 1)}°` : '—'}</b>`;
+  horizonCap.innerHTML = `<span>${t('imuAttitude')}</span><b>${live ? `${num(imu.pitch, 1)}° / ${num(imu.roll, 1)}°` : '—'}</b>`;
 }
 
 function animateDials() {
