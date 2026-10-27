@@ -390,7 +390,7 @@
             <div class="imu-cal-group">
               <div class="imu-cal" id="imuCal"></div>
               <span class="imu-cal-state" id="imuCalWrap" data-help="imuCal"><span id="imuCalState"></span></span>
-              <button id="imuCalSaveBtn" class="btn btn-secondary btn-small" data-i18n="imuCalSave">Save calibration</button>
+              <button id="imuWizBtn" class="btn btn-small" data-i18n="imuWizOpen">Calibrate</button>
               <button id="imuCalClearBtn" class="btn btn-ghost" data-i18n="imuCalClear">Clear</button>
             </div>
             <div class="card-actions">
@@ -747,6 +747,22 @@
       </div>
     </main>
   </div>
+
+  <dialog class="wizard" id="imuWizard" aria-labelledby="imuWizTitle">
+    <div class="wiz-head">
+      <h2 id="imuWizTitle" data-i18n="imuWizTitle">IMU calibration</h2>
+      <button class="icon-btn" id="imuWizClose" type="button" aria-label="Close">✕</button>
+    </div>
+    <ol class="wiz-steps" id="imuWizSteps"></ol>
+    <div class="wiz-body" id="imuWizBody"></div>
+    <div class="wiz-foot">
+      <span class="wiz-live" id="imuWizLive"></span>
+      <div class="wiz-actions">
+        <button class="btn btn-ghost" id="imuWizRepeat" type="button" data-i18n="imuWizRepeat">Repeat poses</button>
+        <button class="btn" id="imuWizDone" type="button" data-i18n="imuWizClose">Close</button>
+      </div>
+    </div>
+  </dialog>
 
   <script src="i18n.js"></script>
   <script src="board.js"></script>

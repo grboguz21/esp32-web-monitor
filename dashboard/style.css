@@ -1130,3 +1130,64 @@ h2[data-help] {
 .imu-cal-state { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-sm); color: var(--muted); }
 .imu-cal-state[data-level="ok"] { color: var(--online); font-weight: 600; }
 .btn-small { height: 30px; padding: 0 12px; font-size: var(--fs-sm); }
+
+/* IMU calibration wizard */
+.wizard {
+  width: min(640px, calc(100vw - 32px));
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+}
+.wizard::backdrop { background: rgba(10, 12, 16, 0.55); }
+.wiz-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px 8px; }
+.wiz-head h2 { margin: 0; }
+.wiz-steps { display: flex; gap: 6px; margin: 0; padding: 0 20px 14px; list-style: none; counter-reset: wstep; }
+.wiz-steps li {
+  flex: 1;
+  padding: 6px 8px;
+  border-radius: var(--r-sm);
+  background: var(--secondary-bg);
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  text-align: center;
+}
+.wiz-steps li[data-state="now"] { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+.wiz-steps li[data-state="done"] { background: color-mix(in srgb, var(--online) 16%, transparent); color: var(--online); }
+.wiz-body { padding: 4px 20px 16px; min-height: 230px; }
+.wiz-body h3 { margin: 0 0 6px; font-size: var(--fs-md); }
+.wiz-body p { margin: 0 0 12px; color: var(--muted); font-size: var(--fs-base); }
+.wiz-check { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--tile-bg); font-size: var(--fs-base); margin-bottom: 8px; }
+.wiz-check i { flex: none; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-style: normal; font-size: 13px; background: var(--secondary-bg); color: var(--muted); }
+.wiz-check.ok i { background: var(--online); color: #fff; }
+.wiz-check.wait i { background: color-mix(in srgb, var(--accent) 25%, transparent); color: var(--accent); }
+.wiz-check b { margin-left: auto; font-variant-numeric: tabular-nums; }
+.wiz-poses { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; }
+.wiz-pose {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  padding: 10px 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--tile-bg);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  text-align: center;
+}
+.wiz-pose svg { width: 54px; height: 54px; color: var(--text); }
+.wiz-pose strong { font-size: var(--fs-base); color: var(--text); }
+.wiz-pose[data-state="now"] { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent); }
+.wiz-pose[data-state="done"] { border-color: var(--online); background: color-mix(in srgb, var(--online) 10%, var(--tile-bg)); }
+.wiz-pose[data-state="done"]::after { content: '✓'; position: absolute; top: 6px; right: 8px; color: var(--online); font-weight: 700; font-size: 14px; }
+.wiz-hold { height: 4px; border-radius: 2px; background: var(--secondary-bg); overflow: hidden; width: 70%; }
+.wiz-hold span { display: block; height: 100%; width: 0; background: var(--accent); }
+.wiz-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 20px 16px; border-top: 1px solid var(--border); }
+.wiz-live { font-size: var(--fs-sm); color: var(--muted); font-variant-numeric: tabular-nums; }
+.wiz-actions { display: flex; gap: 8px; }
+.wiz-big { display: grid; place-items: center; gap: 8px; padding: 18px 0 6px; text-align: center; }
+.wiz-big .wiz-mark { width: 56px; height: 56px; border-radius: 50%; display: grid; place-items: center; font-size: 28px; background: var(--online); color: #fff; }

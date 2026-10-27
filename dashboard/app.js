@@ -581,6 +581,7 @@ function handleLine(line) {
     if (fields.length !== 13) return;
     const [yaw, pitch, roll, ax, ay, az, cs, cg, ca, cm, mode, stored, loaded] = fields.map(Number);
     imu = { present: true, yaw, pitch, roll, ax, ay, az, cal: [cs, cg, ca, cm], mode, calStored: stored === 1, calLoaded: loaded === 1 };
+    imuWizFeed();
     const v = { Yaw: imuYaw(), Pitch: pitch, Roll: roll, X: ax, Y: ay, Z: az };
     for (const [k, chart] of Object.entries(imuCharts)) chart.push('v', v[k]);
     return;
@@ -588,6 +589,7 @@ function handleLine(line) {
 
   if (type === 'IMUCAL' && fields.length === 1) {
     if (imuCalAction) log(t(fields[0] === '1' ? (imuCalAction === 'save' ? 'log.imuCalSaved' : 'log.imuCalCleared') : 'log.imuCalFailed'));
+    if (imuCalAction === 'save' && wiz?.step === 'save') wiz.saveResult = fields[0] === '1';
     imuCalAction = null;
     return;
   }
@@ -1528,7 +1530,7 @@ const imuEls = {
   mode: document.getElementById('imuMode'),
   calState: document.getElementById('imuCalState'),
   calWrap: document.getElementById('imuCalWrap'),
-  calSave: document.getElementById('imuCalSaveBtn'),
+  wizBtn: document.getElementById('imuWizBtn'),
   calClear: document.getElementById('imuCalClearBtn'),
   values: Object.fromEntries(Object.keys(imuChartDefs).map((k) => [k, document.getElementById(`imu${k}`)])),
 };
@@ -1559,9 +1561,7 @@ function renderImu(state) {
   imuEls.calState.textContent = t(!online || !imu ? 'imuCalNone' : !stored ? 'imuCalNone' : imu.calLoaded ? 'imuCalStoredLoaded' : 'imuCalStoredOnly');
   if (online && stored) imuEls.calWrap.dataset.level = 'ok';
   else delete imuEls.calWrap.dataset.level;
-  const needed = ndof ? [0, 1, 2, 3] : [1, 2];   // NDOF: everything; IMU: gyro and accel
-  const ready = live && needed.every((i) => imu.cal[i] === 3);
-  imuEls.calSave.disabled = !port || !ready;
+  imuEls.wizBtn.disabled = !port || !live;
   imuEls.calClear.disabled = !port || !stored;
   imuEls.cal.innerHTML = names.map((n, i) => {
     const level = live ? imu.cal[i] : 0;
@@ -1599,11 +1599,7 @@ function stopImuDemo() {
   render();
 }
 imuEls.demo.addEventListener('click', () => (imuDemoTimer ? stopImuDemo() : startImuDemo()));
-imuEls.calSave.addEventListener('click', () => {
-  if (!port) return;
-  imuCalAction = 'save';
-  send('IMUCALSAVE');
-});
+imuEls.wizBtn.addEventListener('click', openImuWizard);
 imuEls.calClear.addEventListener('click', () => {
   if (!port) return;
   imuCalAction = 'clear';
@@ -1794,6 +1790,188 @@ imuEls.zero.addEventListener('click', () => {
   imuYawZero = imu.yaw;
   imuCharts.Yaw.clear();
   render();
+});
+
+// ---------- IMU calibration wizard ----------
+// Walks through the BNO055's own calibration and checks each step against the live data:
+// gyro (still, until it reads 3), accel (six faces up, each held still for 1.5 s, detected
+// from the gravity vector), compass in NDOF, then saves once everything reads 3.
+
+const POSES = ['zp', 'zm', 'xp', 'xm', 'yp', 'ym'];
+const POSE_HOLD_MS = 1500;
+const STILL_WINDOW_MS = 600;
+const STILL_SPREAD = 0.35;   // m/s²: accel spread over STILL_WINDOW_MS while held still
+let wiz = null;              // { step, poses: Set, holdPose, holdSince, buf: [{t, a}], saveSent, saveResult, stepSince }
+const wizEls = {
+  dialog: document.getElementById('imuWizard'),
+  steps: document.getElementById('imuWizSteps'),
+  body: document.getElementById('imuWizBody'),
+  live: document.getElementById('imuWizLive'),
+  repeat: document.getElementById('imuWizRepeat'),
+  done: document.getElementById('imuWizDone'),
+  close: document.getElementById('imuWizClose'),
+};
+
+const wizSteps = () => (imuEls.mode.value === '1' ? ['gyro', 'accel', 'mag', 'save'] : ['gyro', 'accel', 'save']);
+
+// Which face points up, from the gravity reading: the axis carrying almost all of it
+function currentPose(a) {
+  const axes = [['x', a[0]], ['y', a[1]], ['z', a[2]]];
+  const [axis, v] = axes.reduce((best, c) => (Math.abs(c[1]) > Math.abs(best[1]) ? c : best));
+  const g = Math.hypot(...a);
+  if (g < 7 || Math.abs(v) < 0.9 * g) return null;   // tilted between faces, or moving
+  return axis + (v > 0 ? 'p' : 'm');
+}
+
+function wizStill() {
+  if (!wiz || wiz.buf.length < 8) return false;
+  return [0, 1, 2].every((i) => {
+    const vals = wiz.buf.map((b) => b.a[i]);
+    return Math.max(...vals) - Math.min(...vals) < STILL_SPREAD;
+  });
+}
+
+function openImuWizard() {
+  if (!imu?.present) return;
+  wiz = { step: 'gyro', poses: new Set(), holdPose: null, holdSince: 0, buf: [], saveSent: false, saveResult: null, stepSince: performance.now() };
+  wizEls.dialog.showModal();
+  renderWizard();
+}
+
+function closeImuWizard() {
+  wiz = null;
+  if (wizEls.dialog.open) wizEls.dialog.close();
+}
+
+function wizGo(step) {
+  wiz.step = step;
+  wiz.stepSince = performance.now();
+}
+
+// Called with every IMU report while the wizard is open
+function imuWizFeed() {
+  if (!wiz || !imu?.present) return;
+  const now = performance.now();
+  wiz.buf.push({ t: now, a: [imu.ax, imu.ay, imu.az] });
+  while (wiz.buf.length && wiz.buf[0].t < now - STILL_WINDOW_MS) wiz.buf.shift();
+  const [, gyro, accel, mag] = imu.cal;
+  const settled = now - wiz.stepSince > 800;   // let each step show its ✓ for a moment
+  const steps = wizSteps();
+  const next = () => wizGo(steps[steps.indexOf(wiz.step) + 1]);
+
+  if (wiz.step === 'gyro') {
+    if (gyro === 3 && wizStill()) {
+      if (!wiz.okSince) wiz.okSince = now;
+      if (now - wiz.okSince > 800) { wiz.okSince = 0; next(); }
+    } else wiz.okSince = 0;
+  } else if (wiz.step === 'accel') {
+    const pose = currentPose([imu.ax, imu.ay, imu.az]);
+    if (pose && wizStill() && !wiz.poses.has(pose)) {
+      if (wiz.holdPose !== pose) { wiz.holdPose = pose; wiz.holdSince = now; }
+      else if (now - wiz.holdSince >= POSE_HOLD_MS) { wiz.poses.add(pose); wiz.holdPose = null; }
+    } else if (!pose || !wizStill()) {
+      wiz.holdPose = null;
+    }
+    if (accel === 3 && wiz.poses.size === POSES.length && settled) next();
+  } else if (wiz.step === 'mag') {
+    if (mag === 3 && settled) next();
+  } else if (wiz.step === 'save') {
+    const need = imuEls.mode.value === '1' ? imu.cal.every((c) => c === 3) : gyro === 3 && accel === 3;
+    if (!wiz.saveSent && need && settled) {
+      wiz.saveSent = true;
+      imuCalAction = 'save';
+      send('IMUCALSAVE');
+    }
+    if (wiz.saveResult === false) {   // a sensor dropped below 3 at the last moment: try again
+      wiz.saveResult = null;
+      wiz.saveSent = false;
+    }
+    if (wiz.saveResult === true) wizGo('done');
+  }
+  renderWizard();
+}
+
+const poseSvg = (pose) => {
+  // a board seen at an angle, with the arrow showing which way is up for this pose
+  const up = { zp: 'Z+', zm: 'Z−', xp: 'X+', xm: 'X−', yp: 'Y+', ym: 'Y−' }[pose];
+  const flat = pose[0] === 'z';
+  const board = flat
+    ? `<path d="M10 34 L32 26 L46 34 L24 42 Z" fill="${pose === 'zm' ? 'none' : 'currentColor'}" fill-opacity="0.15" stroke="currentColor" stroke-width="1.5" ${pose === 'zm' ? 'stroke-dasharray="3 2"' : ''}/>`
+    : `<rect x="${pose[0] === 'x' ? 22 : 18}" y="22" width="${pose[0] === 'x' ? 10 : 18}" height="22" rx="2" fill="currentColor" fill-opacity="0.15" stroke="currentColor" stroke-width="1.5"/>`;
+  return `<svg viewBox="0 0 56 56" aria-hidden="true">${board}
+    <path d="M28 18 V4 M23 9 L28 4 L33 9" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="38" y="12" font-size="9" font-weight="700" fill="var(--accent)">${up}</text></svg>`;
+};
+
+function renderWizard() {
+  if (!wiz) return;
+  const steps = wizSteps();
+  const idx = steps.indexOf(wiz.step);
+  const names = { gyro: 'imuWizStepGyro', accel: 'imuWizStepAccel', mag: 'imuWizStepMag', save: 'imuWizStepSave' };
+  wizEls.steps.innerHTML = steps.map((st, i) => {
+    const state = wiz.step === 'done' || i < idx ? 'done' : i === idx ? 'now' : '';
+    return `<li data-state="${state}">${i + 1}. ${t(names[st])}</li>`;
+  }).join('');
+  wizEls.repeat.hidden = wiz.step !== 'accel' || wiz.poses.size < POSES.length;
+  wizEls.done.hidden = wiz.step !== 'done';
+
+  if (!imu?.present) {
+    wizEls.body.innerHTML = `<p>${t('imuWizNoImu')}</p>`;
+    wizEls.live.textContent = '';
+    return;
+  }
+  const [, gyro, accel, mag] = imu.cal;
+  const check = (ok, label, value, waiting = !ok) =>
+    `<div class="wiz-check ${ok ? 'ok' : waiting ? 'wait' : ''}"><i>${ok ? '✓' : '…'}</i>${label}<b>${value}</b></div>`;
+  const still = wizStill();
+  let html = '';
+  if (wiz.step === 'gyro') {
+    html = `<h3>${t('imuWizGyroTitle')}</h3><p>${t('imuWizGyroText')}</p>`
+      + check(still, t('imuWizStill'), still ? '✓' : t('imuWizMoving'))
+      + check(gyro === 3, t('imuWizGyroCal'), `${gyro} / 3`);
+  } else if (wiz.step === 'accel') {
+    const pose = currentPose([imu.ax, imu.ay, imu.az]);
+    html = `<h3>${t('imuWizAccelTitle')}</h3><p>${t('imuWizAccelText')}</p><div class="wiz-poses">`
+      + POSES.map((p) => {
+        const state = wiz.poses.has(p) ? 'done' : p === pose ? 'now' : '';
+        const key = `pose${p[0].toUpperCase()}${p[1]}`;
+        const held = wiz.holdPose === p ? Math.min(1, (performance.now() - wiz.holdSince) / POSE_HOLD_MS) : 0;
+        return `<div class="wiz-pose" data-state="${state}">${poseSvg(p)}<strong>${t(key)}</strong><span>${t(key + 'Text')}</span>`
+          + `<div class="wiz-hold"><span style="width:${wiz.poses.has(p) ? 100 : held * 100}%"></span></div></div>`;
+      }).join('') + '</div>'
+      + check(accel === 3, t('imuWizAccelCal'), `${accel} / 3`)
+      + (wiz.poses.size === POSES.length && accel < 3 ? `<p>${t('imuWizAccelMore', { n: accel })}</p>` : '');
+  } else if (wiz.step === 'mag') {
+    html = `<h3>${t('imuWizMagTitle')}</h3><p>${t('imuWizMagText')}</p>` + check(mag === 3, t('imuWizMagCal'), `${mag} / 3`);
+  } else if (wiz.step === 'save') {
+    html = `<h3>${t('imuWizSaveTitle')}</h3><p>${wiz.saveSent ? t('imuWizSaving') : t('imuWizSaveWait')}</p>`
+      + check(gyro === 3, t('imuWizGyroCal'), `${gyro} / 3`)
+      + check(accel === 3, t('imuWizAccelCal'), `${accel} / 3`)
+      + (imuEls.mode.value === '1' ? check(mag === 3, t('imuWizMagCal'), `${mag} / 3`) : '');
+  } else {
+    html = `<div class="wiz-big"><div class="wiz-mark">✓</div><h3>${t('imuWizDoneTitle')}</h3><p>${t('imuWizDoneText')}</p></div>`;
+  }
+  wizEls.body.innerHTML = html;
+
+  // Live line: which face is up and how long it has been held
+  if (wiz.step === 'accel') {
+    const pose = currentPose([imu.ax, imu.ay, imu.az]);
+    const key = pose && `pose${pose[0].toUpperCase()}${pose[1]}`;
+    const held = wiz.holdPose ? num((performance.now() - wiz.holdSince) / 1000, 1) : null;
+    wizEls.live.textContent = pose ? `${t('imuWizNow', { pose: t(key) })}${held ? ' · ' + t('imuWizHold', { s: held }) : ''}` : t('imuWizNowNone');
+  } else {
+    wizEls.live.textContent = `Gyro ${gyro}/3 · ${t('imuCalAccel')} ${accel}/3${imuEls.mode.value === '1' ? ` · ${t('imuCalMag')} ${mag}/3` : ''}`;
+  }
+}
+
+wizEls.close.addEventListener('click', closeImuWizard);
+wizEls.done.addEventListener('click', closeImuWizard);
+wizEls.dialog.addEventListener('close', () => { wiz = null; });
+wizEls.repeat.addEventListener('click', () => {
+  if (!wiz) return;
+  wiz.poses.clear();
+  wiz.holdPose = null;
+  renderWizard();
 });
 
 // ---------- Drive ----------
