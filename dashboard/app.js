@@ -163,6 +163,7 @@ const chartLabels = {
   none: () => t('noSeries'),
   axis: (s) => (s === 0 ? t('now') : t('axisAgo', { n: s })),
   ago: (s) => (s === 0 ? t('now') : t('secAgo', { n: s })),
+  fill: () => t('chartFill'),
 };
 const motorSeries = MOTORS.map((m) => ({
   key: m,

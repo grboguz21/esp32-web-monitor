@@ -857,6 +857,7 @@ h2[data-help] {
 .chart-legend label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
 .chart-legend input { margin: 0; width: 13px; height: 13px; cursor: pointer; }
 .chart-legend label:has(input:not(:checked)) { opacity: 0.55; }
+.chart-fill-toggle { padding-left: 12px; border-left: 1px solid var(--border); }
 .chart-legend i { width: 14px; height: 3px; border-radius: 2px; }
 .chart-tip-time { color: var(--muted); margin-bottom: 2px; }
 .chart-tip div:not(.chart-tip-time) { display: flex; align-items: center; gap: 6px; }

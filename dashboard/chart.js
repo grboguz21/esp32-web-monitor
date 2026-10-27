@@ -3,6 +3,19 @@
 // crosshair and every series' value at that moment. Colors come from CSS tokens, so it
 // follows the light/dark theme.
 class LiveChart {
+  // Area fill under the lines: one setting for every chart, remembered in this browser
+  static FILL_KEY = 'esp32-dashboard-chart-fill';
+  static fill = (() => {
+    try { return localStorage.getItem(LiveChart.FILL_KEY) !== '0'; } catch { return true; }
+  })();
+  static instances = new Set();
+
+  static setFill(on) {
+    LiveChart.fill = on;
+    try { localStorage.setItem(LiveChart.FILL_KEY, on ? '1' : '0'); } catch { /* storage unavailable */ }
+    for (const chart of LiveChart.instances) chart.renderLegend();
+  }
+
   constructor(container, { series, legend, format, tickFormat = format, minSpan, range, step, windowMs = 60000, labels }) {
     this.container = container;
     this.series = series;       // [{ key, label, short, color: '--series-1' }]
@@ -23,6 +36,7 @@ class LiveChart {
     this.tip.hidden = true;
     container.append(this.canvas, this.tip);
     this.legend = legend;
+    LiveChart.instances.add(this);
     this.renderLegend();
 
     this.canvas.addEventListener('mousemove', (e) => { this.hoverX = e.offsetX; });
@@ -54,6 +68,15 @@ class LiveChart {
       item.append(box, swatch, document.createTextNode(s.label()));
       this.legend.append(item);
     }
+    // Fill toggle, after the series
+    const fillItem = document.createElement('label');
+    fillItem.className = 'chart-fill-toggle';
+    const fillBox = document.createElement('input');
+    fillBox.type = 'checkbox';
+    fillBox.checked = LiveChart.fill;
+    fillBox.addEventListener('change', () => LiveChart.setFill(fillBox.checked));
+    fillItem.append(fillBox, document.createTextNode(this.labels.fill ? this.labels.fill() : 'Fill'));
+    this.legend.append(fillItem);
   }
 
   push(key, value) {
@@ -203,6 +226,24 @@ class LiveChart {
     ctx.clip();
     ctx.lineWidth = 2;
     ctx.lineJoin = 'round';
+    // Area under each line, in a faint tint of its color, down (or up) to zero when zero is
+    // on the axis, otherwise to the bottom edge
+    if (LiveChart.fill) {
+      const baseY = lo <= 0 && hi >= 0 ? y(0) : y(lo);
+      ctx.globalAlpha = 0.14;
+      for (const s of active) {
+        const points = this.data.get(s.key);
+        if (points.length < 2) continue;
+        ctx.fillStyle = token(s.color);
+        ctx.beginPath();
+        ctx.moveTo(x(points[0].t), baseY);
+        for (const p of points) ctx.lineTo(x(p.t), y(p.v));
+        ctx.lineTo(x(points[points.length - 1].t), baseY);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
     for (const s of active) {
       ctx.strokeStyle = token(s.color);
       ctx.beginPath();
