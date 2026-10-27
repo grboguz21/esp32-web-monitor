@@ -353,6 +353,7 @@ async function connect() {
     return;
   }
   stopDemo();
+  if (imuDemoTimer) stopImuDemo();
   port = selected;
   log(t('log.opened', { port: portLabel(port) }));
   render();
@@ -396,6 +397,7 @@ function connectWifi() {
   ws.onopen = () => {
     opened = true;
     stopDemo();
+    if (imuDemoTimer) stopImuDemo();
     port = { ws, host };
     log(t('log.wsOpened', { host }));
     send('HELLO?');
@@ -1513,15 +1515,20 @@ const imuEls = {
   hint: document.getElementById('imuHint'),
   cal: document.getElementById('imuCal'),
   zero: document.getElementById('imuZeroBtn'),
+  demo: document.getElementById('imuDemoBtn'),
   values: Object.fromEntries(Object.keys(imuChartDefs).map((k) => [k, document.getElementById(`imu${k}`)])),
 };
 
 function renderImu(state) {
-  const online = state === 'online';
+  const demo = imuDemoTimer !== null;
+  const online = state === 'online' || demo;
   const live = online && imu?.present;
-  imuEls.badge.textContent = t(!online || !imu ? 'sensorWaiting' : imu.present ? 'imuLive' : 'imuMissing');
-  if (live) imuEls.badge.dataset.level = 'ok';
+  imuEls.badge.textContent = t(demo ? 'sensorDemo' : !online || !imu ? 'sensorWaiting' : imu.present ? 'imuLive' : 'imuMissing');
+  if (demo) imuEls.badge.dataset.level = 'demo';
+  else if (live) imuEls.badge.dataset.level = 'ok';
   else delete imuEls.badge.dataset.level;
+  imuEls.demo.textContent = t(demo ? 'demoStop' : 'demoStart');
+  imuEls.demo.disabled = Boolean(port);
   imuEls.hint.hidden = !(online && imu && !imu.present);
   imuEls.zero.disabled = !live;
   const v = live ? { Yaw: imuYaw(), Pitch: imu.pitch, Roll: imu.roll, X: imu.ax, Y: imu.ay, Z: imu.az } : null;
@@ -1535,6 +1542,35 @@ function renderImu(state) {
     return `<span>${t(n)} <i aria-label="${level}/3">${dots}</i></span>`;
   }).join('') + `<span>${t('imuCalHint')}</span>`;
 }
+
+// Demo only: a robot driving around a room, sent through the same IMU lines as the board.
+// It turns slowly with the odd quick turn, rocks a little and starts uncalibrated.
+let imuDemoTimer = null;
+function startImuDemo() {
+  const t0 = performance.now();
+  let yaw = 90;
+  imuDemoTimer = setInterval(() => {
+    const t = (performance.now() - t0) / 1000;
+    const turnRate = 12 * Math.sin(t / 7) + (Math.sin(t / 2.3) > 0.95 ? 60 : 0);   // °/s
+    yaw = (yaw + turnRate * 0.05 + 360) % 360;
+    const pitch = 2.5 * Math.sin(t * 0.9) + 0.4 * (Math.random() - 0.5);
+    const roll = 1.8 * Math.sin(t * 0.6 + 1) + 0.4 * (Math.random() - 0.5);
+    const ax = 0.8 * Math.sin(t * 1.4) + 0.15 * (Math.random() - 0.5);
+    const ay = (turnRate / 60) * 1.2 + 0.15 * (Math.random() - 0.5);   // pushed sideways in turns
+    const az = 9.81 + 0.12 * (Math.random() - 0.5);
+    const cal = [Math.min(3, Math.floor(t / 6)), Math.min(3, Math.floor(t / 2)), Math.min(3, Math.floor(t / 4)), Math.min(3, Math.floor(t / 5))];
+    handleLine(`IMU,${yaw.toFixed(2)},${pitch.toFixed(2)},${roll.toFixed(2)},${ax.toFixed(2)},${ay.toFixed(2)},${az.toFixed(2)},${cal.join(',')}`);
+  }, 50);
+  render();
+}
+function stopImuDemo() {
+  clearInterval(imuDemoTimer);
+  imuDemoTimer = null;
+  imu = null;
+  for (const chart of Object.values(imuCharts)) chart.clear();
+  render();
+}
+imuEls.demo.addEventListener('click', () => (imuDemoTimer ? stopImuDemo() : startImuDemo()));
 
 imuEls.zero.addEventListener('click', () => {
   if (!imu?.present) return;
