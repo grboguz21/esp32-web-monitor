@@ -465,6 +465,7 @@ async function closePort() {
   spd = null;
   battery = null;
   wifi = null;
+  imu = null;
   for (const m of MOTORS) {
     boardProfile[m] = null;
     profileSaved[m] = false;
@@ -565,6 +566,19 @@ function handleLine(line) {
     const m = Number(fields[0]);
     profileSaved[m] = fields[1] === '1';
     log(t(profileSaved[m] ? 'log.saved' : 'log.saveFailed', { m }));
+    return;
+  }
+
+  if (type === 'IMU') {
+    if (fields.length === 1 && fields[0] === 'NA') {
+      imu = { present: false };
+      return;
+    }
+    if (fields.length !== 10) return;
+    const [yaw, pitch, roll, ax, ay, az, cs, cg, ca, cm] = fields.map(Number);
+    imu = { present: true, yaw, pitch, roll, ax, ay, az, cal: [cs, cg, ca, cm] };
+    const v = { Yaw: imuYaw(), Pitch: pitch, Roll: roll, X: ax, Y: ay, Z: az };
+    for (const [k, chart] of Object.entries(imuCharts)) chart.push('v', v[k]);
     return;
   }
 
@@ -1010,6 +1024,7 @@ function renderMove(state) {
 }
 
 function renderSpd(state) {
+  renderImu(state);
   renderCal(state);
   renderDrive(state);
   renderProfile();
@@ -1467,6 +1482,66 @@ const dutyRunning = () => simTimer !== null || (port && testState === 1 && testO
 for (const el of [els.testDuty1, els.testDuty2]) {
   el.addEventListener('change', () => { if (dutyRunning()) startTest(); });
 }
+
+// ---------- IMU ----------
+// BNO055 angles and acceleration (IMU report, 20 Hz). Heading can be zeroed here: the
+// offset lives in this page only, the sensor keeps its own absolute heading.
+
+let imu = null;        // { present, yaw, pitch, roll, ax, ay, az, cal: [sys, gyro, accel, mag] }
+let imuYawZero = 0;
+const imuYaw = () => (imu?.present ? (((imu.yaw - imuYawZero) % 360) + 360) % 360 : 0);
+const imuChartDefs = {
+  Yaw: { range: [0, 360], step: 90, unit: '°', digits: 1 },
+  Pitch: { range: [-180, 180], step: 90, unit: '°', digits: 1 },
+  Roll: { range: [-180, 180], step: 90, unit: '°', digits: 1 },
+  X: { range: [-20, 20], step: 10, unit: 'm/s²', digits: 2 },
+  Y: { range: [-20, 20], step: 10, unit: 'm/s²', digits: 2 },
+  Z: { range: [-20, 20], step: 10, unit: 'm/s²', digits: 2 },
+};
+const imuCharts = Object.fromEntries(Object.entries(imuChartDefs).map(([k, d]) => [k, new LiveChart(
+  document.getElementById(`imu${k}Chart`), {
+    series: [{ key: 'v', label: () => k, short: '', color: '--series-3' }],
+    format: (v) => `${num(v, d.digits)} ${d.unit}`,
+    tickFormat: (v) => `${Math.round(v)}`,
+    range: d.range,
+    step: d.step,
+    windowMs: 30000,
+    labels: chartLabels,
+  })]));
+const imuEls = {
+  badge: document.getElementById('imuBadge'),
+  hint: document.getElementById('imuHint'),
+  cal: document.getElementById('imuCal'),
+  zero: document.getElementById('imuZeroBtn'),
+  values: Object.fromEntries(Object.keys(imuChartDefs).map((k) => [k, document.getElementById(`imu${k}`)])),
+};
+
+function renderImu(state) {
+  const online = state === 'online';
+  const live = online && imu?.present;
+  imuEls.badge.textContent = t(!online || !imu ? 'sensorWaiting' : imu.present ? 'imuLive' : 'imuMissing');
+  if (live) imuEls.badge.dataset.level = 'ok';
+  else delete imuEls.badge.dataset.level;
+  imuEls.hint.hidden = !(online && imu && !imu.present);
+  imuEls.zero.disabled = !live;
+  const v = live ? { Yaw: imuYaw(), Pitch: imu.pitch, Roll: imu.roll, X: imu.ax, Y: imu.ay, Z: imu.az } : null;
+  for (const [k, el] of Object.entries(imuEls.values)) {
+    el.textContent = v ? `${num(v[k], imuChartDefs[k].digits)} ${imuChartDefs[k].unit}` : '—';
+  }
+  const names = ['imuCalSys', 'imuCalGyro', 'imuCalAccel', 'imuCalMag'];
+  imuEls.cal.innerHTML = names.map((n, i) => {
+    const level = live ? imu.cal[i] : 0;
+    const dots = [1, 2, 3].map((d) => `<b class="${d <= level ? 'on' : ''}"></b>`).join('');
+    return `<span>${t(n)} <i aria-label="${level}/3">${dots}</i></span>`;
+  }).join('') + `<span>${t('imuCalHint')}</span>`;
+}
+
+imuEls.zero.addEventListener('click', () => {
+  if (!imu?.present) return;
+  imuYawZero = imu.yaw;
+  imuCharts.Yaw.clear();
+  render();
+});
 
 // ---------- Drive ----------
 // Both speed loops at once (DRIVE). Buttons work in the robot's frame: each motor's forward
@@ -1975,6 +2050,25 @@ function motorWiringSvg(m) {
   </svg>`;
 }
 
+// BNO055: the same four wires as the INA219s
+function imuWiringSvg() {
+  const pins = [['3V3', 'VIN', 'w-power'], ['GND', 'GND', 'w-gnd'], ['D21', 'SDA', 'w-sda'], ['D22', 'SCL', 'w-scl']];
+  const y = (i) => 62 + i * 30;
+  const rows = pins.map(([esp, b, cls], i) => `
+    <line class="w-wire ${cls}" x1="150" y1="${y(i)}" x2="290" y2="${y(i)}"/>
+    <circle class="w-dot" cx="150" cy="${y(i)}" r="3"/><circle class="w-dot" cx="290" cy="${y(i)}" r="3"/>
+    <text class="w-pin" x="140" y="${y(i) + 4}" text-anchor="end">${esp}</text>
+    <text class="w-pin" x="300" y="${y(i) + 4}">${b}</text>`).join('');
+  return `<svg viewBox="0 0 460 224" role="img" aria-label="BNO055 → ESP32: VIN 3V3, GND GND, SDA D21, SCL D22">
+    <rect class="w-box" x="20" y="30" width="130" height="150" rx="8"/>
+    <text class="w-title" x="85" y="22" text-anchor="middle">ESP32</text>
+    <rect class="w-box" x="290" y="30" width="150" height="150" rx="8"/>
+    <text class="w-title" x="365" y="22" text-anchor="middle">${t('imuWiringBox')}</text>
+    ${rows}
+    <text class="w-note" x="20" y="210">${t('imuWiringNote')}</text>
+  </svg>`;
+}
+
 function motorWiringHtml() {
   return MOTORS.map((m) => `<h4>${t('wiringMotor', { m })}</h4>${motorWiringSvg(m)}`).join('')
     + `<p class="w-notes">${t('wiringEnaNote')}<br>${t('wiringGndNote')}<br>${t('wiringEncNote')}</p>`;
@@ -1983,9 +2077,10 @@ function motorWiringHtml() {
 function renderWiring() {
   document.querySelectorAll('[data-wiring]').forEach((b) => {
     const box = b.parentElement.closest('.power-hint, .wiring-link').querySelector('.wiring');
-    const motors = b.dataset.wiring === 'motors';
+    const kind = b.dataset.wiring;
+    const motors = kind === 'motors';
     b.textContent = t(motors ? (box.hidden ? 'wiringMotorsShow' : 'wiringMotorsHide') : (box.hidden ? 'wiringShow' : 'wiringHide'));
-    if (!box.hidden) box.innerHTML = motors ? motorWiringHtml() : wiringSvg(Number(b.dataset.wiring));
+    if (!box.hidden) box.innerHTML = motors ? motorWiringHtml() : kind === 'imu' ? imuWiringSvg() : wiringSvg(Number(kind));
   });
 }
 

@@ -79,6 +79,7 @@
           <button class="tab" role="tab" data-tab="dashboard" aria-selected="true" data-i18n="tabDashboard">Dashboard</button>
           <button class="tab" role="tab" data-tab="power" aria-selected="false" data-i18n="tabPower">Power</button>
           <button class="tab" role="tab" data-tab="encoder" aria-selected="false" data-i18n="tabEncoder">Encoder</button>
+          <button class="tab" role="tab" data-tab="imu" aria-selected="false" data-i18n="tabImu">IMU</button>
           <button class="tab" role="tab" data-tab="motor" aria-selected="false" data-i18n="tabMotor">Motor</button>
           <button class="tab" role="tab" data-tab="pid" aria-selected="false" data-i18n="tabPid">PID</button>
           <button class="tab" role="tab" data-tab="calib" aria-selected="false" data-i18n="tabCalib">Calibration</button>
@@ -366,6 +367,56 @@
             <div class="chart-legend" id="encLegend"></div>
           </div>
           <div class="chart" id="encChart"></div>
+        </section>
+      </div>
+
+      <div class="tab-panel" data-panel="imu" hidden>
+        <section class="card imu-card" id="imuCard">
+          <div class="card-head">
+            <h2 data-help="imu"><span data-i18n="imuTitle">IMU · BNO055</span></h2>
+            <span class="badge" id="imuBadge"></span>
+          </div>
+          <div class="power-hint imu-hint" id="imuHint" hidden>
+            <div class="power-hint-row">
+              <span data-i18n="imuHintShort">Connect a BNO055 to measure</span>
+              <button class="link-btn" data-wiring="imu"></button>
+            </div>
+            <div class="wiring" hidden></div>
+          </div>
+          <div class="imu-toolbar">
+            <div class="imu-cal" id="imuCal"></div>
+            <button id="imuZeroBtn" class="btn btn-ghost" data-i18n="imuZero">Zero heading</button>
+          </div>
+          <h3 class="imu-section" data-i18n="imuAngles">Angles (°)</h3>
+          <div class="imu-row">
+            <div class="imu-col">
+              <div class="tile"><div class="tile-label">Yaw</div><div class="tile-value" id="imuYaw">—</div></div>
+              <div class="chart imu-chart" id="imuYawChart"></div>
+            </div>
+            <div class="imu-col">
+              <div class="tile"><div class="tile-label">Pitch</div><div class="tile-value" id="imuPitch">—</div></div>
+              <div class="chart imu-chart" id="imuPitchChart"></div>
+            </div>
+            <div class="imu-col">
+              <div class="tile"><div class="tile-label">Roll</div><div class="tile-value" id="imuRoll">—</div></div>
+              <div class="chart imu-chart" id="imuRollChart"></div>
+            </div>
+          </div>
+          <h3 class="imu-section" data-i18n="imuAccel">Acceleration (m/s², gravity included)</h3>
+          <div class="imu-row">
+            <div class="imu-col">
+              <div class="tile"><div class="tile-label">X</div><div class="tile-value" id="imuX">—</div></div>
+              <div class="chart imu-chart" id="imuXChart"></div>
+            </div>
+            <div class="imu-col">
+              <div class="tile"><div class="tile-label">Y</div><div class="tile-value" id="imuY">—</div></div>
+              <div class="chart imu-chart" id="imuYChart"></div>
+            </div>
+            <div class="imu-col">
+              <div class="tile"><div class="tile-label">Z</div><div class="tile-value" id="imuZ">—</div></div>
+              <div class="chart imu-chart" id="imuZChart"></div>
+            </div>
+          </div>
         </section>
       </div>
 

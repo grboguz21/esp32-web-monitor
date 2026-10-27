@@ -3,7 +3,7 @@
 // crosshair and every series' value at that moment. Colors come from CSS tokens, so it
 // follows the light/dark theme.
 class LiveChart {
-  constructor(container, { series, legend, format, tickFormat = format, minSpan, range, windowMs = 60000, labels }) {
+  constructor(container, { series, legend, format, tickFormat = format, minSpan, range, step, windowMs = 60000, labels }) {
     this.container = container;
     this.series = series;       // [{ key, label, short, color: '--series-1' }]
     this.format = format;
@@ -11,6 +11,7 @@ class LiveChart {
     this.minSpan = minSpan;     // smallest y range, so a flat signal is not blown up into noise
     this.range = range;         // optional fixed [min, max] for the y axis
     this.windowMs = windowMs;
+    this.rangeStep = step;   // tick step for a fixed range (otherwise a round step is picked)
     this.labels = labels;       // { empty(), axis(seconds), ago(seconds) }
     this.data = new Map(series.map((s) => [s.key, []]));
     this.hidden = new Set();    // series keys switched off in the legend
@@ -103,10 +104,14 @@ class LiveChart {
         lo = mid - this.minSpan / 2;
         hi = mid + this.minSpan / 2;
       }
-      if (this.range) [lo, hi] = this.range;
-      step = niceStep((hi - lo) / 3);
-      lo = Math.floor(lo / step) * step;
-      hi = Math.ceil(hi / step) * step;
+      if (this.range) {
+        [lo, hi] = this.range;   // a fixed range is drawn as given
+        step = this.rangeStep ?? niceStep((hi - lo) / 3);
+      } else {
+        step = niceStep((hi - lo) / 3);
+        lo = Math.floor(lo / step) * step;
+        hi = Math.ceil(hi / step) * step;
+      }
       for (let v = lo; v <= hi + step / 2; v += step) ticks.push({ v, label: this.tickFormat(v) });
     }
 

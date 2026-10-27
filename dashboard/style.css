@@ -1058,3 +1058,18 @@ h2[data-help] {
 .drive-pad .btn[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 .drive-tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 12px; }
 @media (max-width: 900px) { .drive-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* IMU */
+.imu-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin-bottom: 14px; }
+.imu-cal { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: var(--fs-sm); color: var(--muted); }
+.imu-cal span { display: inline-flex; align-items: center; gap: 6px; }
+.imu-cal i { display: inline-flex; gap: 3px; }
+.imu-cal i b { width: 7px; height: 7px; border-radius: 50%; background: var(--secondary-bg); border: 1px solid var(--border); }
+.imu-cal i b.on { background: var(--online); border-color: var(--online); }
+.imu-section { margin: 4px 0 8px; font-size: var(--fs-base); font-weight: 600; }
+.imu-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 18px; }
+@media (max-width: 900px) { .imu-row { grid-template-columns: 1fr; } }
+.imu-col { display: grid; gap: 8px; min-width: 0; }
+.imu-col .tile-value { font-size: var(--fs-lg); }
+.chart.imu-chart { height: 170px; }
+.imu-hint { margin-bottom: 14px; }

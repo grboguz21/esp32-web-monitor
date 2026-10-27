@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_INA219.h>
+#include <Adafruit_BNO055.h>
 #include <ESP32Encoder.h>
 #include <esp_system.h>
 #include <Preferences.h>
@@ -23,8 +24,12 @@ constexpr const char* DEVICE_NAME = "ESP32";
 // The motor 2 sensor has its A0 pads bridged, which moves it to address 0x41.
 constexpr int I2C_SDA_PIN = 21;
 constexpr int I2C_SCL_PIN = 22;
-constexpr uint32_t I2C_CLOCK_HZ = 400000;
+constexpr uint32_t I2C_CLOCK_HZ = 100000;   // the BNO055 stretches the clock; 100 kHz is safe for it
 constexpr uint8_t POWER_SENSOR_ADDRESSES[] = {0x40, 0x41};
+// BNO055 IMU on the same bus: 0x28 (ADR low, the usual), or 0x29 with ADR high
+constexpr uint8_t IMU_ADDRESSES[] = {0x28, 0x29};
+constexpr uint32_t IMU_REPORT_MS = 50;         // 20 Hz
+constexpr uint32_t IMU_ABSENT_REPORT_MS = 1000;
 constexpr size_t POWER_CHANNELS = sizeof(POWER_SENSOR_ADDRESSES);
 constexpr uint32_t POWER_SAMPLE_MS = 10;      // 100 Hz, averaged into each report
 constexpr uint32_t POWER_REPORT_MS = 100;
@@ -142,7 +147,7 @@ constexpr int32_t MOVE_TOLERANCE_COUNTS = 2;   // close enough: start braking
 constexpr uint32_t MOVE_BRAKE_MS = 300;        // both inputs low (short-circuit brake), then coast
 enum class MovePhase : uint8_t { Idle = 0, Moving = 1, Braking = 2, Done = 3, Aborted = 4 };
 
-constexpr const char* FIRMWARE_VERSION = "0.23.1";
+constexpr const char* FIRMWARE_VERSION = "0.24.0";
 
 // Protocol (one message per line):
 //   ESP32 -> PC : HB,<uptime_ms>               heartbeat
@@ -167,6 +172,8 @@ constexpr const char* FIRMWARE_VERSION = "0.23.1";
 //                 FF,<motor>,<+|->,<rpm>:<duty>;...   that motor's feedforward curve
 //                 SAVED,<motor>,<ok>               profile written to flash
 //                 WIFI,<0 off|1 joining|2 on>,<ssid>,<ip>,<rssi_dbm>
+//                 IMU,<yaw>,<pitch>,<roll>,<ax>,<ay>,<az>,<cal_sys>,<cal_gyro>,<cal_accel>,<cal_mag>
+//                 (degrees, m/s^2 with gravity, calibration 0..3)  /  IMU,NA   no BNO055 found
 //                 MOVE,<phase>,<target_counts>,<position_counts>,<profile_rpm>,<final_error_counts>
 //                 DRIVE,<active>,<target1>,<target2>,<rpm1>,<rpm2>,<rev1>,<rev2>,<correction_rpm>
 //                 (phase 0 idle, 1 moving, 2 braking, 3 done, 4 aborted; position from the start)
@@ -1030,6 +1037,52 @@ void sendLog() {
 }
 
 // Runs on core 0 and owns the serial port and I2C bus, so this I/O never slows loop() down
+// ---------- IMU (BNO055) ----------
+// The chip fuses gyro, accelerometer and magnetometer itself (NDOF mode) and hands out
+// absolute angles. Looked for every SENSOR_PROBE_MS until found, like the INA219s.
+Adafruit_BNO055 bnoAt[] = {Adafruit_BNO055(55, IMU_ADDRESSES[0], &Wire),
+                           Adafruit_BNO055(55, IMU_ADDRESSES[1], &Wire)};
+Adafruit_BNO055* bno = nullptr;   // the one that answered
+bool imuReady = false;
+uint8_t imuAddress = 0;
+
+void serviceImu() {
+  static uint32_t lastProbe = 0, lastReport = 0;
+  uint32_t now = millis();
+  if (!imuReady) {
+    if (lastProbe != 0 && now - lastProbe < SENSOR_PROBE_MS) {
+      if (now - lastReport >= IMU_ABSENT_REPORT_MS) {
+        lastReport = now;
+        out.println("IMU,NA");
+      }
+      return;
+    }
+    lastProbe = now;
+    for (size_t i = 0; i < sizeof(IMU_ADDRESSES); i++) {
+      if (!i2cDevicePresent(IMU_ADDRESSES[i])) continue;
+      if (bnoAt[i].begin(OPERATION_MODE_NDOF)) {   // takes about a second, once
+        bno = &bnoAt[i];
+        imuReady = true;
+        imuAddress = IMU_ADDRESSES[i];
+        break;
+      }
+    }
+    return;
+  }
+  if (now - lastReport < IMU_REPORT_MS) return;
+  lastReport = now;
+  if (!i2cDevicePresent(imuAddress)) {   // unplugged
+    imuReady = false;
+    return;
+  }
+  imu::Vector<3> euler = bno->getVector(Adafruit_BNO055::VECTOR_EULER);   // heading, roll, pitch
+  imu::Vector<3> acc = bno->getVector(Adafruit_BNO055::VECTOR_ACCELEROMETER);
+  uint8_t sys = 0, gyro = 0, accel = 0, mag = 0;
+  bno->getCalibration(&sys, &gyro, &accel, &mag);
+  out.printf("IMU,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%u,%u,%u,%u\n", euler.x(), euler.z(), euler.y(),
+             acc.x(), acc.y(), acc.z(), sys, gyro, accel, mag);
+}
+
 void telemetryTask(void*) {
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
   Wire.setClock(I2C_CLOCK_HZ);
@@ -1043,6 +1096,7 @@ void telemetryTask(void*) {
     sendHealth();
     samplePower();
     sendPower();
+    serviceImu();
     sendBattery();
     saveProfiles();
     sendMotorRun();
