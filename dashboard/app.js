@@ -163,7 +163,6 @@ const chartLabels = {
   none: () => t('noSeries'),
   axis: (s) => (s === 0 ? t('now') : t('axisAgo', { n: s })),
   ago: (s) => (s === 0 ? t('now') : t('secAgo', { n: s })),
-  fill: () => t('chartFill'),
 };
 const motorSeries = MOTORS.map((m) => ({
   key: m,
@@ -2376,6 +2375,19 @@ function currentTheme() {
   return document.documentElement.dataset.theme ?? (systemDark.matches ? 'dark' : 'light');
 }
 
+// One switch in the top bar for the area fill of every chart
+const fillBtn = document.getElementById('fillBtn');
+function renderFillButton() {
+  fillBtn.setAttribute('aria-pressed', String(LiveChart.fill));
+  fillBtn.title = t(LiveChart.fill ? 'chartFillOff' : 'chartFillOn');
+  fillBtn.setAttribute('aria-label', fillBtn.title);
+}
+fillBtn.addEventListener('click', () => {
+  LiveChart.setFill(!LiveChart.fill);
+  renderFillButton();
+});
+renderFillButton();
+
 function renderThemeButton() {
   const dark = currentTheme() === 'dark';
   themeBtn.innerHTML = dark ? ICONS.sun : ICONS.moon;
@@ -2417,6 +2429,7 @@ try {
 
 I18N.onChange(() => {
   renderThemeButton();
+  renderFillButton();
   currentChart.renderLegend();
   voltageChart.renderLegend();
   encChart.renderLegend();

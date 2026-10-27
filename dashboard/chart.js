@@ -8,12 +8,10 @@ class LiveChart {
   static fill = (() => {
     try { return localStorage.getItem(LiveChart.FILL_KEY) !== '0'; } catch { return true; }
   })();
-  static instances = new Set();
 
   static setFill(on) {
     LiveChart.fill = on;
     try { localStorage.setItem(LiveChart.FILL_KEY, on ? '1' : '0'); } catch { /* storage unavailable */ }
-    for (const chart of LiveChart.instances) chart.renderLegend();
   }
 
   constructor(container, { series, legend, format, tickFormat = format, minSpan, range, step, windowMs = 60000, labels }) {
@@ -35,15 +33,7 @@ class LiveChart {
     this.tip.className = 'chart-tip';
     this.tip.hidden = true;
     container.append(this.canvas, this.tip);
-    // Charts without a legend still get the fill toggle, in a small corner box
-    if (!legend) {
-      legend = document.createElement('div');
-      legend.className = 'chart-legend chart-corner';
-      container.append(legend);
-      this.cornerOnly = true;
-    }
     this.legend = legend;
-    LiveChart.instances.add(this);
     this.renderLegend();
 
     this.canvas.addEventListener('mousemove', (e) => { this.hoverX = e.offsetX; });
@@ -60,7 +50,7 @@ class LiveChart {
   renderLegend() {
     if (!this.legend) return;
     this.legend.innerHTML = '';
-    for (const s of this.cornerOnly ? [] : this.series) {
+    for (const s of this.series) {
       const item = document.createElement('label');
       const box = document.createElement('input');
       box.type = 'checkbox';
@@ -75,15 +65,6 @@ class LiveChart {
       item.append(box, swatch, document.createTextNode(s.label()));
       this.legend.append(item);
     }
-    // Fill toggle, after the series
-    const fillItem = document.createElement('label');
-    fillItem.className = 'chart-fill-toggle';
-    const fillBox = document.createElement('input');
-    fillBox.type = 'checkbox';
-    fillBox.checked = LiveChart.fill;
-    fillBox.addEventListener('change', () => LiveChart.setFill(fillBox.checked));
-    fillItem.append(fillBox, document.createTextNode(this.labels.fill ? this.labels.fill() : 'Fill'));
-    this.legend.append(fillItem);
   }
 
   push(key, value) {
@@ -150,7 +131,7 @@ class LiveChart {
     const endLabelWidth = this.series.length > 1
       ? Math.max(...this.series.map((s) => ctx.measureText(typeof s.short === 'function' ? s.short() : s.short).width))
       : 0;
-    const pad = { left: Math.max(48, Math.ceil(labelWidth) + 14), right: Math.max(34, Math.ceil(endLabelWidth) + 16), top: this.cornerOnly ? 28 : 10, bottom: 24 };
+    const pad = { left: Math.max(48, Math.ceil(labelWidth) + 14), right: Math.max(34, Math.ceil(endLabelWidth) + 16), top: 10, bottom: 24 };
     const pw = w - pad.left - pad.right;
     const ph = h - pad.top - pad.bottom;
     const now = performance.now();
