@@ -147,7 +147,7 @@ constexpr int32_t MOVE_TOLERANCE_COUNTS = 2;   // close enough: start braking
 constexpr uint32_t MOVE_BRAKE_MS = 300;        // both inputs low (short-circuit brake), then coast
 enum class MovePhase : uint8_t { Idle = 0, Moving = 1, Braking = 2, Done = 3, Aborted = 4 };
 
-constexpr const char* FIRMWARE_VERSION = "0.26.0";
+constexpr const char* FIRMWARE_VERSION = "0.26.1";
 
 // Protocol (one message per line):
 //   ESP32 -> PC : HB,<uptime_ms>               heartbeat
@@ -200,6 +200,8 @@ constexpr const char* FIRMWARE_VERSION = "0.26.0";
 //                                              1 NDOF (with compass); kept in flash
 //                 IMUCALSAVE / IMUCALCLEAR     keep the sensor's calibration in flash (only once
 //                                              the mode's sensors read 3) / forget it
+//                 IMUDIAG                      BNO055 chip id, mode, status and error registers
+//                 I2CR,<addr>,<reg> / I2CW,<addr>,<reg>,<value>   one register (hex), troubleshooting
 //                 PROFILE?,<motor>             print that motor's profile (PROFILE + two FF lines)
 //                 GAIN,<kp>,<ki>[,<motor>]     / REF,<tau_ms>,<ka>[,<motor>]: no motor = both
 //                 KICK,<motor>,<plus>,<minus>  start thresholds, %
@@ -615,6 +617,7 @@ void parseFfTable(const String& cmd) {
 }
 
 void setImuMode(uint8_t mode);   // IMU section, further down
+void printImuDiag();
 bool saveImuCal();
 void clearImuCal();
 
@@ -743,6 +746,23 @@ void handleCommand(const String& cmd) {
     printWifi();
   } else if (cmd.startsWith("IMUMODE,")) {
     setImuMode(cmd.endsWith("1") ? 1 : 0);
+  } else if (cmd == "IMUDIAG") {
+    printImuDiag();
+
+  } else if (cmd.startsWith("I2CR,") || cmd.startsWith("I2CW,")) {
+    // I2CR,<addr>,<reg>  /  I2CW,<addr>,<reg>,<value>   (hex) one register, for troubleshooting
+    unsigned addr = 0, reg = 0, value = 0;
+    bool write = cmd[3] == 'W';
+    int n = sscanf(cmd.c_str() + 5, "%x,%x,%x", &addr, &reg, &value);
+    if (n >= 2) {
+      Wire.beginTransmission((uint8_t)addr);
+      Wire.write((uint8_t)reg);
+      if (write) Wire.write((uint8_t)value);
+      int e = Wire.endTransmission(!write ? false : true);
+      int v = -1;
+      if (!write && e == 0 && Wire.requestFrom((uint8_t)addr, (uint8_t)1) == 1) v = Wire.read();
+      out.printf("I2C,%c,0x%02X,0x%02X,%d,%d\n", write ? 'W' : 'R', addr, reg, write ? (int)value : v, e);
+    }
   } else if (cmd == "IMUCALSAVE") {
     out.printf("IMUCAL,%d\n", saveImuCal() ? 1 : 0);
   } else if (cmd == "IMUCALCLEAR") {
@@ -1124,6 +1144,27 @@ bool saveImuCal() {
   return ok;
 }
 
+// IMUDIAG: the chip's own registers, read straight over I2C (troubleshooting)
+// IMUDIAG,<addr>,<chip_id>,<op_mode>,<sys_status>,<sys_error>,<accel_raw_x,y,z>,<i2c_errors>
+void printImuDiag() {
+  uint8_t addr = imuReady ? imuAddress : IMU_ADDRESSES[0];
+  int errors = 0;
+  auto reg = [&](uint8_t r) -> int {
+    Wire.beginTransmission(addr);
+    Wire.write(r);
+    if (Wire.endTransmission(false) != 0) { errors++; return -1; }
+    if (Wire.requestFrom(addr, (uint8_t)1) != 1) { errors++; return -1; }
+    return Wire.read();
+  };
+  int id = reg(0x00), mode = reg(0x3D), status = reg(0x39), err = reg(0x3A);
+  int16_t acc[3] = {};
+  for (int i = 0; i < 3; i++) {
+    int lo = reg(0x08 + 2 * i), hi = reg(0x09 + 2 * i);
+    acc[i] = (int16_t)(((hi < 0 ? 0 : hi) << 8) | (lo < 0 ? 0 : lo));
+  }
+  out.printf("IMUDIAG,0x%02X,%d,%d,%d,%d,%d,%d,%d,%d\n", addr, id, mode, status, err, acc[0], acc[1], acc[2], errors);
+}
+
 void clearImuCal() {
   Preferences prefs;
   if (prefs.begin("imu", false)) {
@@ -1144,6 +1185,17 @@ void setImuMode(uint8_t mode) {
   if (imuReady) bno->setMode(imuOpMode());
 }
 
+// The BNO055 is checked by reading its chip id (0xA0). An address-only write, which is
+// enough for the INA219s, upsets it: it takes it as a register address out of range and
+// drops out of its fusion mode.
+bool bnoAnswers(uint8_t addr) {
+  Wire.beginTransmission(addr);
+  Wire.write((uint8_t)0x00);   // CHIP_ID register
+  if (Wire.endTransmission(false) != 0) return false;
+  if (Wire.requestFrom(addr, (uint8_t)1) != 1) return false;
+  return Wire.read() == 0xA0;
+}
+
 void serviceImu() {
   static uint32_t lastProbe = 0, lastReport = 0;
   uint32_t now = millis();
@@ -1157,7 +1209,7 @@ void serviceImu() {
     }
     lastProbe = now;
     for (size_t i = 0; i < sizeof(IMU_ADDRESSES); i++) {
-      if (!i2cDevicePresent(IMU_ADDRESSES[i])) continue;
+      if (!bnoAnswers(IMU_ADDRESSES[i])) continue;
       if (bnoAt[i].begin(imuOpMode())) {   // takes about a second, once
         bno = &bnoAt[i];
         imuReady = true;
@@ -1170,7 +1222,7 @@ void serviceImu() {
   }
   if (now - lastReport < IMU_REPORT_MS) return;
   lastReport = now;
-  if (!i2cDevicePresent(imuAddress)) {   // unplugged
+  if (!bnoAnswers(imuAddress)) {   // unplugged
     imuReady = false;
     return;
   }
