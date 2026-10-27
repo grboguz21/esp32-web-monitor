@@ -161,7 +161,7 @@ let demoTimer = null;   // fake POWER data for previewing the Power card without
 const chartLabels = {
   empty: () => t('noData'),
   none: () => t('noSeries'),
-  axis: (s) => (s === 0 ? t('now') : t('axisAgo', { n: s })),
+  axis: (s) => (s === 0 ? t('now') : t('axisAgo', { n: num(s, Number.isInteger(s) ? 0 : 1) })),
   ago: (s) => (s === 0 ? t('now') : t('secAgo', { n: s })),
 };
 const motorSeries = MOTORS.map((m) => ({

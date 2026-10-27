@@ -135,17 +135,22 @@ class LiveChart {
     const pw = w - pad.left - pad.right;
     const ph = h - pad.top - pad.bottom;
     const now = performance.now();
-    const x = (t) => pad.left + (1 - (now - t) / this.windowMs) * pw;
+    // The time axis spans from the oldest point to now, so a fresh chart fills from the left
+    // edge and widens until it holds the whole window, then scrolls
+    const oldest = Math.min(...active.map((s) => this.data.get(s.key)[0].t));
+    const spanMs = active.length ? Math.min(this.windowMs, Math.max(1000, now - oldest)) : this.windowMs;
+    const x = (t) => pad.left + (1 - (now - t) / spanMs) * pw;
     const y = (v) => pad.top + (1 - (v - lo) / (hi - lo)) * ph;
 
     // Time axis: -60 s ... now
     ctx.fillStyle = token('--muted');
     ctx.textBaseline = 'alphabetic';
-    const seconds = this.windowMs / 1000;
+    const seconds = spanMs / 1000;
+    const roundS = (v) => (v >= 10 ? Math.round(v) : Math.round(v * 10) / 10);
     for (const s of [seconds, seconds / 2, 0]) {
       const px = pad.left + (1 - s / seconds) * pw;
       ctx.textAlign = s === seconds ? 'left' : s === 0 ? 'right' : 'center';
-      ctx.fillText(this.labels.axis(s), px, h - 6);
+      ctx.fillText(this.labels.axis(roundS(s)), px, h - 6);
     }
 
     // Background grid, spaced by pixels so long and short windows look alike: vertical
