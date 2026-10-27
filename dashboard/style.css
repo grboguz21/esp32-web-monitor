@@ -1072,7 +1072,7 @@ h2[data-help] {
 .imu-cal i { display: inline-flex; gap: 3px; }
 .imu-cal i b { width: 7px; height: 7px; border-radius: 50%; background: var(--secondary-bg); border: 1px solid var(--border); }
 .imu-cal i b.on { background: var(--online); border-color: var(--online); }
-.imu-section { margin: 4px 0 8px; font-size: var(--fs-base); font-weight: 600; }
+.imu-section { margin: 0 0 8px; font-size: var(--fs-base); font-weight: 600; }
 .imu-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 18px; }
 @media (max-width: 900px) { .imu-row { grid-template-columns: 1fr; } }
 .imu-col { display: grid; gap: 8px; min-width: 0; }
@@ -1081,8 +1081,24 @@ h2[data-help] {
 .imu-hint { margin-bottom: 14px; }
 .imu-mode { display: inline-flex; align-items: center; gap: 8px; font-size: var(--fs-sm); color: var(--muted); }
 .imu-mode select { width: auto; height: 30px; padding: 0 8px; font-size: var(--fs-sm); }
-.imu-dials { display: flex; flex-wrap: wrap; justify-content: center; gap: 24px 56px; margin: 4px 0 18px; }
-.imu-dial { margin: 0; display: grid; justify-items: center; gap: 6px; }
-.imu-dial canvas { width: 220px; height: 220px; max-width: 100%; }
+/* Instruments on the left, numbers and charts on the right */
+.imu-layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 20px; align-items: stretch; }
+@media (max-width: 1100px) { .imu-layout { grid-template-columns: 1fr; } }
+.imu-dials {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-around;
+  align-items: center;
+  gap: 20px;
+  padding: 18px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--tile-bg);
+}
+@media (max-width: 1100px) { .imu-dials { flex-direction: row; flex-wrap: wrap; justify-content: center; gap: 24px 48px; } }
+.imu-data { min-width: 0; }
+.imu-data .imu-row:last-child { margin-bottom: 0; }
+.imu-dial { margin: 0; display: grid; justify-items: center; gap: 8px; }
+.imu-dial canvas { width: 200px; height: 200px; max-width: 100%; }
 .imu-dial figcaption { font-size: var(--fs-sm); color: var(--muted); font-variant-numeric: tabular-nums; }
 .imu-dial figcaption b { color: var(--text); font-weight: 600; }

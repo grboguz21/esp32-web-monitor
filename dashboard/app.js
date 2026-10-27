@@ -1617,7 +1617,7 @@ function drawCompass(live) {
   // face
   ctx.beginPath();
   ctx.arc(0, 0, r, 0, Math.PI * 2);
-  ctx.fillStyle = tk('--tile-bg');
+  ctx.fillStyle = tk('--surface');   // stands out from the instrument panel behind it
   ctx.fill();
   ctx.lineWidth = 1.5;
   ctx.strokeStyle = tk('--border');

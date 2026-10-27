@@ -396,7 +396,8 @@
               <button id="imuZeroBtn" class="btn btn-ghost" data-i18n="imuZero">Zero heading</button>
             </div>
           </div>
-          <div class="imu-dials">
+          <div class="imu-layout">
+            <div class="imu-dials">
             <figure class="imu-dial">
               <canvas id="imuCompass" width="240" height="240" role="img" aria-label="Heading"></canvas>
               <figcaption id="imuCompassCap">Heading</figcaption>
@@ -406,34 +407,37 @@
               <figcaption id="imuHorizonCap">Tilt (pitch / roll)</figcaption>
             </figure>
           </div>
-          <h3 class="imu-section" data-i18n="imuAngles">Angles (°)</h3>
-          <div class="imu-row">
-            <div class="imu-col">
-              <div class="tile"><div class="tile-label">Yaw</div><div class="tile-value" id="imuYaw">—</div></div>
-              <div class="chart imu-chart" id="imuYawChart"></div>
+            <div class="imu-data">
+            <h3 class="imu-section" data-i18n="imuAngles">Angles (°)</h3>
+            <div class="imu-row">
+              <div class="imu-col">
+                <div class="tile"><div class="tile-label">Yaw</div><div class="tile-value" id="imuYaw">—</div></div>
+                <div class="chart imu-chart" id="imuYawChart"></div>
+              </div>
+              <div class="imu-col">
+                <div class="tile"><div class="tile-label">Pitch</div><div class="tile-value" id="imuPitch">—</div></div>
+                <div class="chart imu-chart" id="imuPitchChart"></div>
+              </div>
+              <div class="imu-col">
+                <div class="tile"><div class="tile-label">Roll</div><div class="tile-value" id="imuRoll">—</div></div>
+                <div class="chart imu-chart" id="imuRollChart"></div>
+              </div>
             </div>
-            <div class="imu-col">
-              <div class="tile"><div class="tile-label">Pitch</div><div class="tile-value" id="imuPitch">—</div></div>
-              <div class="chart imu-chart" id="imuPitchChart"></div>
+            <h3 class="imu-section" data-i18n="imuAccel">Acceleration (m/s², gravity included)</h3>
+            <div class="imu-row">
+              <div class="imu-col">
+                <div class="tile"><div class="tile-label">X</div><div class="tile-value" id="imuX">—</div></div>
+                <div class="chart imu-chart" id="imuXChart"></div>
+              </div>
+              <div class="imu-col">
+                <div class="tile"><div class="tile-label">Y</div><div class="tile-value" id="imuY">—</div></div>
+                <div class="chart imu-chart" id="imuYChart"></div>
+              </div>
+              <div class="imu-col">
+                <div class="tile"><div class="tile-label">Z</div><div class="tile-value" id="imuZ">—</div></div>
+                <div class="chart imu-chart" id="imuZChart"></div>
+              </div>
             </div>
-            <div class="imu-col">
-              <div class="tile"><div class="tile-label">Roll</div><div class="tile-value" id="imuRoll">—</div></div>
-              <div class="chart imu-chart" id="imuRollChart"></div>
-            </div>
-          </div>
-          <h3 class="imu-section" data-i18n="imuAccel">Acceleration (m/s², gravity included)</h3>
-          <div class="imu-row">
-            <div class="imu-col">
-              <div class="tile"><div class="tile-label">X</div><div class="tile-value" id="imuX">—</div></div>
-              <div class="chart imu-chart" id="imuXChart"></div>
-            </div>
-            <div class="imu-col">
-              <div class="tile"><div class="tile-label">Y</div><div class="tile-value" id="imuY">—</div></div>
-              <div class="chart imu-chart" id="imuYChart"></div>
-            </div>
-            <div class="imu-col">
-              <div class="tile"><div class="tile-label">Z</div><div class="tile-value" id="imuZ">—</div></div>
-              <div class="chart imu-chart" id="imuZChart"></div>
             </div>
           </div>
         </section>
