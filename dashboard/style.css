@@ -1100,5 +1100,22 @@ h2[data-help] {
 .imu-data .imu-row:last-child { margin-bottom: 0; }
 .imu-dial { margin: 0; display: grid; justify-items: center; gap: 6px; }
 .imu-dial canvas { width: 168px; height: 168px; max-width: 100%; }
-.imu-dial figcaption { display: grid; justify-items: center; gap: 1px; text-align: center; font-size: var(--fs-xs); color: var(--muted); font-variant-numeric: tabular-nums; }
-.imu-dial figcaption b { color: var(--text); font-size: var(--fs-lg); font-weight: 700; }
+.imu-dial figcaption {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 10%, transparent);
+  white-space: nowrap;
+}
+.imu-dial figcaption span {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.imu-dial figcaption b { color: var(--text); font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: var(--fs-md); font-weight: 700; font-variant-numeric: tabular-nums; }
