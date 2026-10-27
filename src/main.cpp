@@ -147,7 +147,7 @@ constexpr int32_t MOVE_TOLERANCE_COUNTS = 2;   // close enough: start braking
 constexpr uint32_t MOVE_BRAKE_MS = 300;        // both inputs low (short-circuit brake), then coast
 enum class MovePhase : uint8_t { Idle = 0, Moving = 1, Braking = 2, Done = 3, Aborted = 4 };
 
-constexpr const char* FIRMWARE_VERSION = "0.24.0";
+constexpr const char* FIRMWARE_VERSION = "0.25.0";
 
 // Protocol (one message per line):
 //   ESP32 -> PC : HB,<uptime_ms>               heartbeat
@@ -172,8 +172,9 @@ constexpr const char* FIRMWARE_VERSION = "0.24.0";
 //                 FF,<motor>,<+|->,<rpm>:<duty>;...   that motor's feedforward curve
 //                 SAVED,<motor>,<ok>               profile written to flash
 //                 WIFI,<0 off|1 joining|2 on>,<ssid>,<ip>,<rssi_dbm>
-//                 IMU,<yaw>,<pitch>,<roll>,<ax>,<ay>,<az>,<cal_sys>,<cal_gyro>,<cal_accel>,<cal_mag>
-//                 (degrees, m/s^2 with gravity, calibration 0..3)  /  IMU,NA   no BNO055 found
+//                 IMU,<yaw>,<pitch>,<roll>,<ax>,<ay>,<az>,<cal_sys>,<cal_gyro>,<cal_accel>,<cal_mag>,<mode>
+//                 (degrees, m/s^2 with gravity, calibration 0..3, mode 0 IMU / 1 NDOF)
+//                 IMU,NA,<mode>   no BNO055 found
 //                 MOVE,<phase>,<target_counts>,<position_counts>,<profile_rpm>,<final_error_counts>
 //                 DRIVE,<active>,<target1>,<target2>,<rpm1>,<rpm2>,<rev1>,<rev2>,<correction_rpm>
 //                 (phase 0 idle, 1 moving, 2 braking, 3 done, 4 aborted; position from the start)
@@ -193,6 +194,8 @@ constexpr const char* FIRMWARE_VERSION = "0.24.0";
 //                                              drive both motors open loop at once (0 = coast)
 //                 STOP                         stop the motor
 //                 WIFI?  /  WIFISET,<ssid>,<password>  /  WIFIOFF     home network (kept in flash)
+//                 IMUMODE,<0|1>                BNO055 fusion: 0 IMU (gyro + accel, no compass),
+//                                              1 NDOF (with compass); kept in flash
 //                 PROFILE?,<motor>             print that motor's profile (PROFILE + two FF lines)
 //                 GAIN,<kp>,<ki>[,<motor>]     / REF,<tau_ms>,<ka>[,<motor>]: no motor = both
 //                 KICK,<motor>,<plus>,<minus>  start thresholds, %
@@ -607,6 +610,8 @@ void parseFfTable(const String& cmd) {
   portEXIT_CRITICAL(&runMux);
 }
 
+void setImuMode(uint8_t mode);   // IMU section, further down
+
 void handleCommand(const String& cmd) {
   if (cmd == "HELLO?") {
     printHello();
@@ -730,6 +735,8 @@ void handleCommand(const String& cmd) {
     }
     startWifi();
     printWifi();
+  } else if (cmd.startsWith("IMUMODE,")) {
+    setImuMode(cmd.endsWith("1") ? 1 : 0);
   } else if (cmd.startsWith("PROFILE?,")) {
     unsigned motor;
     if (sscanf(cmd.c_str(), "PROFILE?,%u", &motor) == 1 && motor >= 1 && motor <= MOTOR_COUNT) {
@@ -1045,6 +1052,30 @@ Adafruit_BNO055 bnoAt[] = {Adafruit_BNO055(55, IMU_ADDRESSES[0], &Wire),
 Adafruit_BNO055* bno = nullptr;   // the one that answered
 bool imuReady = false;
 uint8_t imuAddress = 0;
+// IMU mode (default): gyro + accelerometer only, so the motors' magnets cannot pull the
+// heading; it is relative to start-up and drifts slowly. NDOF adds the compass: absolute
+// heading, but easily disturbed next to motors.
+uint8_t imuMode = 0;
+
+adafruit_bno055_opmode_t imuOpMode() { return imuMode == 1 ? OPERATION_MODE_NDOF : OPERATION_MODE_IMUPLUS; }
+
+void loadImuMode() {
+  Preferences prefs;
+  if (prefs.begin("imu", true)) {
+    imuMode = prefs.getUChar("mode", 0) == 1 ? 1 : 0;
+    prefs.end();
+  }
+}
+
+void setImuMode(uint8_t mode) {
+  imuMode = mode ? 1 : 0;
+  Preferences prefs;
+  if (prefs.begin("imu", false)) {
+    prefs.putUChar("mode", imuMode);
+    prefs.end();
+  }
+  if (imuReady) bno->setMode(imuOpMode());
+}
 
 void serviceImu() {
   static uint32_t lastProbe = 0, lastReport = 0;
@@ -1053,14 +1084,14 @@ void serviceImu() {
     if (lastProbe != 0 && now - lastProbe < SENSOR_PROBE_MS) {
       if (now - lastReport >= IMU_ABSENT_REPORT_MS) {
         lastReport = now;
-        out.println("IMU,NA");
+        out.printf("IMU,NA,%u\n", imuMode);
       }
       return;
     }
     lastProbe = now;
     for (size_t i = 0; i < sizeof(IMU_ADDRESSES); i++) {
       if (!i2cDevicePresent(IMU_ADDRESSES[i])) continue;
-      if (bnoAt[i].begin(OPERATION_MODE_NDOF)) {   // takes about a second, once
+      if (bnoAt[i].begin(imuOpMode())) {   // takes about a second, once
         bno = &bnoAt[i];
         imuReady = true;
         imuAddress = IMU_ADDRESSES[i];
@@ -1079,8 +1110,8 @@ void serviceImu() {
   imu::Vector<3> acc = bno->getVector(Adafruit_BNO055::VECTOR_ACCELEROMETER);
   uint8_t sys = 0, gyro = 0, accel = 0, mag = 0;
   bno->getCalibration(&sys, &gyro, &accel, &mag);
-  out.printf("IMU,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%u,%u,%u,%u\n", euler.x(), euler.z(), euler.y(),
-             acc.x(), acc.y(), acc.z(), sys, gyro, accel, mag);
+  out.printf("IMU,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%u,%u,%u,%u,%u\n", euler.x(), euler.z(), euler.y(),
+             acc.x(), acc.y(), acc.z(), sys, gyro, accel, mag, imuMode);
 }
 
 void telemetryTask(void*) {
@@ -1088,6 +1119,7 @@ void telemetryTask(void*) {
   Wire.setClock(I2C_CLOCK_HZ);
   printHello();
   printInfo();
+  loadImuMode();
   startWifi();
   for (;;) {
     serviceWifi();

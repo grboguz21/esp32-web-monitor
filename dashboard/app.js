@@ -572,13 +572,13 @@ function handleLine(line) {
   }
 
   if (type === 'IMU') {
-    if (fields.length === 1 && fields[0] === 'NA') {
-      imu = { present: false };
+    if (fields[0] === 'NA') {
+      imu = { present: false, mode: Number(fields[1] ?? 0) };
       return;
     }
-    if (fields.length !== 10) return;
-    const [yaw, pitch, roll, ax, ay, az, cs, cg, ca, cm] = fields.map(Number);
-    imu = { present: true, yaw, pitch, roll, ax, ay, az, cal: [cs, cg, ca, cm] };
+    if (fields.length !== 11) return;
+    const [yaw, pitch, roll, ax, ay, az, cs, cg, ca, cm, mode] = fields.map(Number);
+    imu = { present: true, yaw, pitch, roll, ax, ay, az, cal: [cs, cg, ca, cm], mode };
     const v = { Yaw: imuYaw(), Pitch: pitch, Roll: roll, X: ax, Y: ay, Z: az };
     for (const [k, chart] of Object.entries(imuCharts)) chart.push('v', v[k]);
     return;
@@ -1516,6 +1516,7 @@ const imuEls = {
   cal: document.getElementById('imuCal'),
   zero: document.getElementById('imuZeroBtn'),
   demo: document.getElementById('imuDemoBtn'),
+  mode: document.getElementById('imuMode'),
   values: Object.fromEntries(Object.keys(imuChartDefs).map((k) => [k, document.getElementById(`imu${k}`)])),
 };
 
@@ -1535,7 +1536,11 @@ function renderImu(state) {
   for (const [k, el] of Object.entries(imuEls.values)) {
     el.textContent = v ? `${num(v[k], imuChartDefs[k].digits)} ${imuChartDefs[k].unit}` : '—';
   }
-  const names = ['imuCalSys', 'imuCalGyro', 'imuCalAccel', 'imuCalMag'];
+  // The board's mode wins once it reports; until then the page shows its own choice
+  if (imu && document.activeElement !== imuEls.mode) imuEls.mode.value = String(imu.mode ?? 0);
+  imuEls.mode.disabled = !port && !demo;
+  const ndof = imuEls.mode.value === '1';
+  const names = ['imuCalSys', 'imuCalGyro', 'imuCalAccel', ...(ndof ? ['imuCalMag'] : [])];   // no compass in IMU mode
   imuEls.cal.innerHTML = names.map((n, i) => {
     const level = live ? imu.cal[i] : 0;
     const dots = [1, 2, 3].map((d) => `<b class="${d <= level ? 'on' : ''}"></b>`).join('');
@@ -1546,6 +1551,7 @@ function renderImu(state) {
 // Demo only: a robot driving around a room, sent through the same IMU lines as the board.
 // It turns slowly with the odd quick turn, rocks a little and starts uncalibrated.
 let imuDemoTimer = null;
+let imuDemoMode = 0;
 function startImuDemo() {
   const t0 = performance.now();
   let yaw = 90;
@@ -1559,7 +1565,7 @@ function startImuDemo() {
     const ay = (turnRate / 60) * 1.2 + 0.15 * (Math.random() - 0.5);   // pushed sideways in turns
     const az = 9.81 + 0.12 * (Math.random() - 0.5);
     const cal = [Math.min(3, Math.floor(t / 6)), Math.min(3, Math.floor(t / 2)), Math.min(3, Math.floor(t / 4)), Math.min(3, Math.floor(t / 5))];
-    handleLine(`IMU,${yaw.toFixed(2)},${pitch.toFixed(2)},${roll.toFixed(2)},${ax.toFixed(2)},${ay.toFixed(2)},${az.toFixed(2)},${cal.join(',')}`);
+    handleLine(`IMU,${yaw.toFixed(2)},${pitch.toFixed(2)},${roll.toFixed(2)},${ax.toFixed(2)},${ay.toFixed(2)},${az.toFixed(2)},${cal.join(',')},${imuDemoMode}`);
   }, 50);
   render();
 }
@@ -1571,6 +1577,14 @@ function stopImuDemo() {
   render();
 }
 imuEls.demo.addEventListener('click', () => (imuDemoTimer ? stopImuDemo() : startImuDemo()));
+imuEls.mode.addEventListener('change', () => {
+  const mode = Number(imuEls.mode.value);
+  if (port) send(`IMUMODE,${mode}`);
+  imuDemoMode = mode;
+  imuYawZero = 0;
+  imuCharts.Yaw.clear();
+  render();
+});
 
 imuEls.zero.addEventListener('click', () => {
   if (!imu?.present) return;

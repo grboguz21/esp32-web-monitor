@@ -386,6 +386,12 @@
           <div class="imu-toolbar">
             <div class="imu-cal" id="imuCal"></div>
             <div class="card-actions">
+              <label class="imu-mode"><span data-i18n="imuMode">Mode</span>
+                <select id="imuMode">
+                  <option value="0" data-i18n="imuModeImu">IMU (no compass)</option>
+                  <option value="1" data-i18n="imuModeNdof">NDOF (with compass)</option>
+                </select>
+              </label>
               <button id="imuDemoBtn" class="btn btn-ghost"></button>
               <button id="imuZeroBtn" class="btn btn-ghost" data-i18n="imuZero">Zero heading</button>
             </div>
