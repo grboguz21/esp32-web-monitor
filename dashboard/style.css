@@ -11,6 +11,8 @@
   --r-lg: 12px;
   --tile-bg: #f8f9fb;
   --wire-motor: #a855f7;
+  --sky: #5aa9e6;
+  --ground: #a8743f;
   --bg: #f4f5f7;
   --surface: #ffffff;
   --sidebar: #fbfbfc;
@@ -81,6 +83,8 @@
     --secondary-bg: #232730;
     --log-bg: #111318;
     --tile-bg: #1e222a;
+    --sky: #2f6ea3;
+    --ground: #6e4d2c;
     --banner-bg: #3b1515;
     --banner-text: #fca5a5;
     --input: #22d3ee;
@@ -118,6 +122,8 @@
   --secondary-bg: #232730;
   --log-bg: #111318;
   --tile-bg: #1e222a;
+  --sky: #2f6ea3;
+  --ground: #6e4d2c;
   --banner-bg: #3b1515;
   --banner-text: #fca5a5;
   --input: #22d3ee;
@@ -1075,3 +1081,8 @@ h2[data-help] {
 .imu-hint { margin-bottom: 14px; }
 .imu-mode { display: inline-flex; align-items: center; gap: 8px; font-size: var(--fs-sm); color: var(--muted); }
 .imu-mode select { width: auto; height: 30px; padding: 0 8px; font-size: var(--fs-sm); }
+.imu-dials { display: flex; flex-wrap: wrap; justify-content: center; gap: 24px 56px; margin: 4px 0 18px; }
+.imu-dial { margin: 0; display: grid; justify-items: center; gap: 6px; }
+.imu-dial canvas { width: 220px; height: 220px; max-width: 100%; }
+.imu-dial figcaption { font-size: var(--fs-sm); color: var(--muted); font-variant-numeric: tabular-nums; }
+.imu-dial figcaption b { color: var(--text); font-weight: 600; }

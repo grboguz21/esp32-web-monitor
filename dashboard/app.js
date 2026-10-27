@@ -1586,6 +1586,176 @@ imuEls.mode.addEventListener('change', () => {
   render();
 });
 
+// Heading dial and artificial horizon, drawn on canvas each frame while the IMU tab is open.
+// The shown angles ease towards the latest reading (heading the short way round).
+const imuPanel = document.querySelector('[data-panel="imu"]');
+const compassCanvas = document.getElementById('imuCompass');
+const horizonCanvas = document.getElementById('imuHorizon');
+const compassCap = document.getElementById('imuCompassCap');
+const horizonCap = document.getElementById('imuHorizonCap');
+const shown = { yaw: 0, pitch: 0, roll: 0 };
+
+function prepCanvas(canvas) {
+  const dpr = window.devicePixelRatio || 1;
+  const size = canvas.clientWidth || 220;
+  if (canvas.width !== size * dpr) {
+    canvas.width = size * dpr;
+    canvas.height = size * dpr;
+  }
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, size, size);
+  return { ctx, size, r: size / 2 - 6, css: getComputedStyle(document.documentElement) };
+}
+
+function drawCompass(live) {
+  const { ctx, size, r, css } = prepCanvas(compassCanvas);
+  const tk = (n) => css.getPropertyValue(n).trim();
+  const c = size / 2;
+  ctx.save();
+  ctx.translate(c, c);
+  // face
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.fillStyle = tk('--tile-bg');
+  ctx.fill();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = tk('--border');
+  ctx.stroke();
+  // ticks every 10°, longer every 30°
+  for (let d = 0; d < 360; d += 10) {
+    const a = (d - 90) * Math.PI / 180;
+    const long = d % 30 === 0;
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(a) * (r - (long ? 12 : 6)), Math.sin(a) * (r - (long ? 12 : 6)));
+    ctx.lineTo(Math.cos(a) * (r - 2), Math.sin(a) * (r - 2));
+    ctx.strokeStyle = tk(long ? '--muted' : '--border');
+    ctx.lineWidth = long ? 1.5 : 1;
+    ctx.stroke();
+  }
+  // labels: N E S W with the compass, degrees without
+  const ndof = imuEls.mode.value === '1';
+  const labels = ndof ? t('imuCardinal').split(',') : ['0', '90', '180', '270'];
+  ctx.font = '600 12px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  labels.forEach((text, i) => {
+    const a = (i * 90 - 90) * Math.PI / 180;
+    ctx.fillStyle = ndof && i === 0 ? tk('--danger') : tk('--text');
+    ctx.fillText(text, Math.cos(a) * (r - 24), Math.sin(a) * (r - 24));
+  });
+  // robot seen from above, nose pointing along the heading
+  ctx.rotate(shown.yaw * Math.PI / 180);
+  ctx.globalAlpha = live ? 1 : 0.35;
+  const w = r * 0.34, h = r * 0.5;
+  ctx.beginPath();
+  ctx.roundRect(-w / 2, -h / 2, w, h, 6);
+  ctx.fillStyle = tk('--surface');
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = tk('--text');
+  ctx.stroke();
+  ctx.fillStyle = tk('--text');   // wheels
+  ctx.fillRect(-w / 2 - 6, -h / 4, 5, h / 2);
+  ctx.fillRect(w / 2 + 1, -h / 4, 5, h / 2);
+  ctx.beginPath();                // nose arrow
+  ctx.moveTo(0, -h / 2 - r * 0.28);
+  ctx.lineTo(-9, -h / 2 - 4);
+  ctx.lineTo(9, -h / 2 - 4);
+  ctx.closePath();
+  ctx.fillStyle = tk('--accent');
+  ctx.fill();
+  ctx.restore();
+  compassCap.innerHTML = `${t('imuHeading')} · <b>${live ? `${num(imuYaw(), 0)}°` : '—'}</b>`;
+}
+
+function drawHorizon(live) {
+  const { ctx, size, r, css } = prepCanvas(horizonCanvas);
+  const tk = (n) => css.getPropertyValue(n).trim();
+  const c = size / 2;
+  const pxPerDeg = r / 45;   // ±45° of pitch fills the dial
+  ctx.save();
+  ctx.translate(c, c);
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.clip();
+  // sky and ground, turned by roll and shifted by pitch
+  ctx.save();
+  ctx.rotate(-shown.roll * Math.PI / 180);
+  ctx.translate(0, shown.pitch * pxPerDeg);
+  ctx.globalAlpha = live ? 1 : 0.35;
+  ctx.fillStyle = tk('--sky');
+  ctx.fillRect(-size, -size * 2, size * 2, size * 2);
+  ctx.fillStyle = tk('--ground');
+  ctx.fillRect(-size, 0, size * 2, size * 2);
+  ctx.globalAlpha = 1;
+  ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(-size, 0);
+  ctx.lineTo(size, 0);
+  ctx.stroke();
+  // pitch ladder every 10°
+  ctx.lineWidth = 1.2;
+  ctx.font = '10px system-ui, sans-serif';
+  ctx.fillStyle = 'rgba(255,255,255,0.9)';
+  ctx.textBaseline = 'middle';
+  for (let p = -30; p <= 30; p += 10) {
+    if (p === 0) continue;
+    const y = -p * pxPerDeg;
+    const half = p % 20 === 0 ? r * 0.28 : r * 0.16;
+    ctx.beginPath();
+    ctx.moveTo(-half, y);
+    ctx.lineTo(half, y);
+    ctx.stroke();
+    if (p % 20 === 0) {
+      ctx.textAlign = 'left';
+      ctx.fillText(String(Math.abs(p)), half + 4, y);
+    }
+  }
+  ctx.restore();
+  // fixed robot marker
+  ctx.strokeStyle = tk('--accent');
+  ctx.lineWidth = 3;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(-r * 0.42, 0);
+  ctx.lineTo(-r * 0.14, 0);
+  ctx.lineTo(-r * 0.07, r * 0.07);
+  ctx.moveTo(r * 0.42, 0);
+  ctx.lineTo(r * 0.14, 0);
+  ctx.lineTo(r * 0.07, r * 0.07);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(0, 0, 3, 0, Math.PI * 2);
+  ctx.fillStyle = tk('--accent');
+  ctx.fill();
+  ctx.restore();
+  // rim
+  ctx.beginPath();
+  ctx.arc(c, c, r, 0, Math.PI * 2);
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = tk('--border');
+  ctx.stroke();
+  horizonCap.innerHTML = `${t('imuAttitude')} · <b>${live ? `${num(imu.pitch, 1)}° / ${num(imu.roll, 1)}°` : '—'}</b>`;
+}
+
+function animateDials() {
+  requestAnimationFrame(animateDials);
+  if (imuPanel.hidden) return;
+  const live = Boolean(imu?.present) && (currentState() === 'online' || imuDemoTimer !== null);
+  if (live) {
+    const ease = 0.25;
+    const dYaw = ((imuYaw() - shown.yaw + 540) % 360) - 180;   // short way round
+    shown.yaw += dYaw * ease;
+    shown.pitch += (imu.pitch - shown.pitch) * ease;
+    shown.roll += (imu.roll - shown.roll) * ease;
+  }
+  drawCompass(live);
+  drawHorizon(live);
+}
+requestAnimationFrame(animateDials);
+
 imuEls.zero.addEventListener('click', () => {
   if (!imu?.present) return;
   imuYawZero = imu.yaw;
