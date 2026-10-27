@@ -384,7 +384,12 @@
             <div class="wiring" hidden></div>
           </div>
           <div class="imu-toolbar">
-            <div class="imu-cal" id="imuCal"></div>
+            <div class="imu-cal-group">
+              <div class="imu-cal" id="imuCal"></div>
+              <span class="imu-cal-state" id="imuCalWrap" data-help="imuCal"><span id="imuCalState"></span></span>
+              <button id="imuCalSaveBtn" class="btn btn-secondary btn-small" data-i18n="imuCalSave">Save calibration</button>
+              <button id="imuCalClearBtn" class="btn btn-ghost" data-i18n="imuCalClear">Clear</button>
+            </div>
             <div class="card-actions">
               <label class="imu-mode"><span data-i18n="imuMode">Mode</span>
                 <select id="imuMode">

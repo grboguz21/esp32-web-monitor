@@ -573,14 +573,20 @@ function handleLine(line) {
 
   if (type === 'IMU') {
     if (fields[0] === 'NA') {
-      imu = { present: false, mode: Number(fields[1] ?? 0) };
+      imu = { present: false, mode: Number(fields[1] ?? 0), calStored: fields[2] === '1', calLoaded: false };
       return;
     }
-    if (fields.length !== 11) return;
-    const [yaw, pitch, roll, ax, ay, az, cs, cg, ca, cm, mode] = fields.map(Number);
-    imu = { present: true, yaw, pitch, roll, ax, ay, az, cal: [cs, cg, ca, cm], mode };
+    if (fields.length !== 13) return;
+    const [yaw, pitch, roll, ax, ay, az, cs, cg, ca, cm, mode, stored, loaded] = fields.map(Number);
+    imu = { present: true, yaw, pitch, roll, ax, ay, az, cal: [cs, cg, ca, cm], mode, calStored: stored === 1, calLoaded: loaded === 1 };
     const v = { Yaw: imuYaw(), Pitch: pitch, Roll: roll, X: ax, Y: ay, Z: az };
     for (const [k, chart] of Object.entries(imuCharts)) chart.push('v', v[k]);
+    return;
+  }
+
+  if (type === 'IMUCAL' && fields.length === 1) {
+    if (imuCalAction) log(t(fields[0] === '1' ? (imuCalAction === 'save' ? 'log.imuCalSaved' : 'log.imuCalCleared') : 'log.imuCalFailed'));
+    imuCalAction = null;
     return;
   }
 
@@ -1491,6 +1497,7 @@ for (const el of [els.testDuty1, els.testDuty2]) {
 
 let imu = null;        // { present, yaw, pitch, roll, ax, ay, az, cal: [sys, gyro, accel, mag] }
 let imuYawZero = 0;
+let imuCalAction = null;   // 'save' | 'clear' waiting for the board's IMUCAL answer
 const imuYaw = () => (imu?.present ? (((imu.yaw - imuYawZero) % 360) + 360) % 360 : 0);
 const imuChartDefs = {
   Yaw: { range: [0, 360], step: 90, unit: '°', digits: 1 },
@@ -1517,6 +1524,10 @@ const imuEls = {
   zero: document.getElementById('imuZeroBtn'),
   demo: document.getElementById('imuDemoBtn'),
   mode: document.getElementById('imuMode'),
+  calState: document.getElementById('imuCalState'),
+  calWrap: document.getElementById('imuCalWrap'),
+  calSave: document.getElementById('imuCalSaveBtn'),
+  calClear: document.getElementById('imuCalClearBtn'),
   values: Object.fromEntries(Object.keys(imuChartDefs).map((k) => [k, document.getElementById(`imu${k}`)])),
 };
 
@@ -1541,6 +1552,15 @@ function renderImu(state) {
   imuEls.mode.disabled = !port && !demo;
   const ndof = imuEls.mode.value === '1';
   const names = ['imuCalSys', 'imuCalGyro', 'imuCalAccel', ...(ndof ? ['imuCalMag'] : [])];   // no compass in IMU mode
+  // Saved calibration: what the board says, and whether the mode's sensors allow a save now
+  const stored = Boolean(imu?.calStored);
+  imuEls.calState.textContent = t(!online || !imu ? 'imuCalNone' : !stored ? 'imuCalNone' : imu.calLoaded ? 'imuCalStoredLoaded' : 'imuCalStoredOnly');
+  if (online && stored) imuEls.calWrap.dataset.level = 'ok';
+  else delete imuEls.calWrap.dataset.level;
+  const needed = ndof ? [0, 1, 2, 3] : [1, 2];   // NDOF: everything; IMU: gyro and accel
+  const ready = live && needed.every((i) => imu.cal[i] === 3);
+  imuEls.calSave.disabled = !port || !ready;
+  imuEls.calClear.disabled = !port || !stored;
   imuEls.cal.innerHTML = names.map((n, i) => {
     const level = live ? imu.cal[i] : 0;
     const dots = [1, 2, 3].map((d) => `<b class="${d <= level ? 'on' : ''}"></b>`).join('');
@@ -1565,7 +1585,7 @@ function startImuDemo() {
     const ay = (turnRate / 60) * 1.2 + 0.15 * (Math.random() - 0.5);   // pushed sideways in turns
     const az = 9.81 + 0.12 * (Math.random() - 0.5);
     const cal = [Math.min(3, Math.floor(t / 6)), Math.min(3, Math.floor(t / 2)), Math.min(3, Math.floor(t / 4)), Math.min(3, Math.floor(t / 5))];
-    handleLine(`IMU,${yaw.toFixed(2)},${pitch.toFixed(2)},${roll.toFixed(2)},${ax.toFixed(2)},${ay.toFixed(2)},${az.toFixed(2)},${cal.join(',')},${imuDemoMode}`);
+    handleLine(`IMU,${yaw.toFixed(2)},${pitch.toFixed(2)},${roll.toFixed(2)},${ax.toFixed(2)},${ay.toFixed(2)},${az.toFixed(2)},${cal.join(',')},${imuDemoMode},0,0`);
   }, 50);
   render();
 }
@@ -1577,6 +1597,17 @@ function stopImuDemo() {
   render();
 }
 imuEls.demo.addEventListener('click', () => (imuDemoTimer ? stopImuDemo() : startImuDemo()));
+imuEls.calSave.addEventListener('click', () => {
+  if (!port) return;
+  imuCalAction = 'save';
+  send('IMUCALSAVE');
+});
+imuEls.calClear.addEventListener('click', () => {
+  if (!port) return;
+  imuCalAction = 'clear';
+  send('IMUCALCLEAR');
+});
+
 imuEls.mode.addEventListener('change', () => {
   const mode = Number(imuEls.mode.value);
   if (port) send(`IMUMODE,${mode}`);
