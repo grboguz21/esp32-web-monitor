@@ -1800,7 +1800,7 @@ imuEls.zero.addEventListener('click', () => {
 const POSES = ['zp', 'zm', 'xp', 'xm', 'yp', 'ym'];
 const POSE_HOLD_MS = 1500;
 const STILL_WINDOW_MS = 600;
-const STILL_SPREAD = 0.35;   // m/s²: accel spread over STILL_WINDOW_MS while held still
+const STILL_SPREAD = 1.2;    // m/s²: accel spread over STILL_WINDOW_MS that still counts as held still by hand
 let wiz = null;              // { step, poses: Set, holdPose, holdSince, buf: [{t, a}], saveSent, saveResult, stepSince }
 const wizEls = {
   dialog: document.getElementById('imuWizard'),
