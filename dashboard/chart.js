@@ -35,6 +35,13 @@ class LiveChart {
     this.tip.className = 'chart-tip';
     this.tip.hidden = true;
     container.append(this.canvas, this.tip);
+    // Charts without a legend still get the fill toggle, in a small corner box
+    if (!legend) {
+      legend = document.createElement('div');
+      legend.className = 'chart-legend chart-corner';
+      container.append(legend);
+      this.cornerOnly = true;
+    }
     this.legend = legend;
     LiveChart.instances.add(this);
     this.renderLegend();
@@ -53,7 +60,7 @@ class LiveChart {
   renderLegend() {
     if (!this.legend) return;
     this.legend.innerHTML = '';
-    for (const s of this.series) {
+    for (const s of this.cornerOnly ? [] : this.series) {
       const item = document.createElement('label');
       const box = document.createElement('input');
       box.type = 'checkbox';
@@ -143,7 +150,7 @@ class LiveChart {
     const endLabelWidth = this.series.length > 1
       ? Math.max(...this.series.map((s) => ctx.measureText(typeof s.short === 'function' ? s.short() : s.short).width))
       : 0;
-    const pad = { left: Math.max(48, Math.ceil(labelWidth) + 14), right: Math.max(34, Math.ceil(endLabelWidth) + 16), top: 10, bottom: 24 };
+    const pad = { left: Math.max(48, Math.ceil(labelWidth) + 14), right: Math.max(34, Math.ceil(endLabelWidth) + 16), top: this.cornerOnly ? 28 : 10, bottom: 24 };
     const pw = w - pad.left - pad.right;
     const ph = h - pad.top - pad.bottom;
     const now = performance.now();
