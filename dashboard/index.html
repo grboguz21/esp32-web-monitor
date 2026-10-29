@@ -30,6 +30,14 @@
         <div class="status-label" id="statusLabel"></div>
       </section>
 
+      <section class="panel estop">
+        <button id="estopBtn" class="btn btn-danger estop-btn" type="button"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="3" width="10" height="10" rx="1.5" fill="currentColor"/></svg></button>
+        <div class="estop-text">
+          <div class="estop-title" data-i18n="estopTitle">Emergency stop</div>
+          <div class="estop-hint" data-i18n="estopHint">Stops all motors · Esc</div>
+        </div>
+      </section>
+
       <section class="panel connection">
         <label for="portSelect" class="field-label" data-help="port"><span data-i18n="serialPort">Serial port</span></label>
         <select id="portSelect"></select>
@@ -128,6 +136,33 @@
               <div class="tile-sub" id="hBattSub"></div>
             </div>
           </div>
+        </section>
+
+        <section class="card fw-card" id="fwCard">
+          <div class="card-head">
+            <h2 data-help="fw"><span data-i18n="fwTitle">Firmware update</span></h2>
+            <span class="badge" id="fwBadge"></span>
+          </div>
+          <div class="fw-controls">
+            <label class="field"><span data-i18n="fwTarget">Upload over</span>
+              <select id="fwTarget">
+                <option value="ota" data-i18n="fwTargetOta">Wi-Fi</option>
+                <option value="usb" data-i18n="fwTargetUsb">USB</option>
+              </select>
+            </label>
+            <button id="fwStartBtn" class="btn" type="button"><span data-i18n="fwStart">Build and upload</span></button>
+          </div>
+          <div class="fw-bars">
+            <div class="fw-bar">
+              <div class="fw-bar-head"><span data-i18n="fwCompile">Compile</span><span id="fwCompilePct">—</span></div>
+              <div class="meter fw-meter"><span id="fwCompileBar"></span></div>
+            </div>
+            <div class="fw-bar">
+              <div class="fw-bar-head"><span data-i18n="fwUpload">Upload</span><span id="fwUploadPct">—</span></div>
+              <div class="meter fw-meter"><span id="fwUploadBar"></span></div>
+            </div>
+          </div>
+          <div class="fw-status" id="fwStatus"></div>
         </section>
 
         <section class="card power">
@@ -726,8 +761,9 @@
 
       <div class="tab-panel" data-panel="board" hidden>
         <section class="card board-intro">
+          <div class="board-tabs" id="boardTabs" role="tablist"></div>
           <div>
-            <h2 data-i18n="boardTitle">DOIT ESP32 DevKit V1 · 30 pins</h2>
+            <h2 id="boardTitle"></h2>
             <p class="placeholder" data-i18n="boardDesc">Top view, USB at the bottom. All GPIOs use 3.3 V logic and are not 5 V tolerant. Click a pin for details.</p>
           </div>
           <div class="filters" id="pinFilters"></div>

@@ -7,3 +7,6 @@
 # OS files
 .DS_Store
 Thumbs.db
+
+# Local secrets (OTA password)
+secrets.ini

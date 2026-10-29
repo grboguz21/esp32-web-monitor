@@ -8,6 +8,7 @@
 #include <WiFi.h>
 #include <ESPmDNS.h>
 #include <WebSocketsServer.h>
+#include <ArduinoOTA.h>
 
 constexpr uint32_t SERIAL_BAUD = 460800;   // room for the 200 Hz log next to the telemetry
 constexpr uint32_t HEARTBEAT_INTERVAL_MS = 500;
@@ -36,9 +37,13 @@ constexpr uint32_t POWER_REPORT_MS = 100;
 constexpr uint32_t POWER_ABSENT_REPORT_MS = 1000;
 constexpr uint32_t SENSOR_PROBE_MS = 2000;
 
-// One L298N per motor. PWM goes to IN1 (+ direction) or IN2 (- direction) with ENA held
-// HIGH, so in the off phase the low-side transistors carry the motor current (slow decay)
-// instead of the diodes. ENA LOW lets the motor coast; that is the stopped state.
+// One L298N, motor 1 on channel A (ENA, IN1, IN2), motor 2 on channel B (ENB, IN3, IN4).
+// PWM goes to IN1 (+ direction) or IN2 (- direction) with ENA held HIGH, so in the off
+// phase the low-side transistors carry the motor current (slow decay) instead of the
+// diodes. ENA LOW lets the motor coast; that is the stopped state.
+// The enables sit on pins that stay quiet during boot (4, 16). GPIO0, 2 and 15 are
+// strapping pins that can toggle while the chip starts, so they only carry IN lines,
+// which do nothing while the enable is LOW.
 struct MotorPins {
   int ena;
   int in1;
@@ -47,13 +52,10 @@ struct MotorPins {
   int encB;
 };
 constexpr MotorPins MOTOR_PINS[] = {
-  {25, 26, 27, 34, 35},   // motor 1 (GPIO34/35 have no internal pull-ups)
-  {18, 19, 23, 16, 17},   // motor 2
+  {4, 2, 15, 19, 18},     // motor 1: A/B read swapped (yellow on D18) so + duty counts up
+  {16, 17, 0, 32, 33},    // motor 2
 };
 constexpr size_t MOTOR_COUNT = sizeof(MOTOR_PINS) / sizeof(MOTOR_PINS[0]);
-// The onboard LED can stand in for a motor to check the test without any wiring
-constexpr int LED_PIN = 2;
-constexpr unsigned LED_TARGET = MOTOR_COUNT + 1;   // RUN target number after the motors
 constexpr int ALL_MOTORS = MOTOR_COUNT + 1;         // MotorRun.motor for DUTY: every motor at once
 constexpr uint32_t PWM_FREQ_HZ = 1000;      // same as Arduino-ESP32's analogWrite() default
 constexpr uint8_t PWM_BITS = 10;
@@ -147,7 +149,7 @@ constexpr int32_t MOVE_TOLERANCE_COUNTS = 2;   // close enough: start braking
 constexpr uint32_t MOVE_BRAKE_MS = 300;        // both inputs low (short-circuit brake), then coast
 enum class MovePhase : uint8_t { Idle = 0, Moving = 1, Braking = 2, Done = 3, Aborted = 4 };
 
-constexpr const char* FIRMWARE_VERSION = "0.26.1";
+constexpr const char* FIRMWARE_VERSION = "0.27.1";
 
 // Protocol (one message per line):
 //   ESP32 -> PC : HB,<uptime_ms>               heartbeat
@@ -177,6 +179,8 @@ constexpr const char* FIRMWARE_VERSION = "0.26.1";
 //                  saved calibration in flash 0/1, and loaded into the sensor at start-up 0/1)
 //                 IMU,NA,<mode>,<cal_stored>   no BNO055 found
 //                 IMUCAL,<ok>                  answer to IMUCALSAVE / IMUCALCLEAR
+//                 OTA,<percent> / OTA,ERR,<code>   firmware update over Wi-Fi (USB only; the
+//                                              board restarts when it is done)
 //                 MOVE,<phase>,<target_counts>,<position_counts>,<profile_rpm>,<final_error_counts>
 //                 DRIVE,<active>,<target1>,<target2>,<rpm1>,<rpm2>,<rev1>,<rev2>,<correction_rpm>
 //                 (phase 0 idle, 1 moving, 2 braking, 3 done, 4 aborted; position from the start)
@@ -188,7 +192,6 @@ constexpr const char* FIRMWARE_VERSION = "0.26.1";
 //                 PING                         dashboard is alive (keeps the motor allowed to run)
 //                 RUN,<target>,<duty>,<duration_ms>
 //                                              drive one motor: duty -100..100 %, + = IN1, - = IN2;
-//                                              target 3 is the onboard LED (brightness = |duty|);
 //                                              duration_ms 0 runs until STOP
 //                 DRIVE,<rpm1>,<rpm2>[,<sync>]  both speed loops at once (each motor's own sign);
 //                                              sync = RPM correction per rev of difference, 0 off
@@ -202,6 +205,8 @@ constexpr const char* FIRMWARE_VERSION = "0.26.1";
 //                                              the mode's sensors read 3) / forget it
 //                 IMUDIAG                      BNO055 chip id, mode, status and error registers
 //                 I2CR,<addr>,<reg> / I2CW,<addr>,<reg>,<value>   one register (hex), troubleshooting
+//                 I2CSCAN                      SDA/SCL levels and every address that answers
+//                                              -> I2CSCAN,<sda>,<scl>,<acked>,<nack>,<other>,<addr hex ...>
 //                 PROFILE?,<motor>             print that motor's profile (PROFILE + two FF lines)
 //                 GAIN,<kp>,<ki>[,<motor>]     / REF,<tau_ms>,<ka>[,<motor>]: no motor = both
 //                 KICK,<motor>,<plus>,<minus>  start thresholds, %
@@ -235,7 +240,7 @@ TaskHandle_t mainLoopTask = nullptr;
 enum class RunState : uint8_t { Idle = 0, Running = 1, Watchdog = 2, Done = 3 };
 
 struct MotorRun {
-  int motor = 0;              // index into MOTOR_PINS, or MOTOR_COUNT for the LED
+  int motor = 0;              // index into MOTOR_PINS, or ALL_MOTORS for DUTY
   RunMode mode = RunMode::OpenLoop;
   float duty = 0;             // -100..100 %, open loop
   float duties[MOTOR_COUNT] = {};   // DUTY: per motor, open loop
@@ -360,6 +365,9 @@ const char* resetReasonName(esp_reset_reason_t reason) {
 constexpr const char* WIFI_HOSTNAME = "esp32-robot";
 constexpr uint16_t WS_PORT = 81;
 constexpr size_t WS_OUT_MAX = 16384;   // drop output beyond this if Wi-Fi stalls
+// Firmware updates over Wi-Fi (pio run -e ota -t upload). The password comes from
+// secrets.ini through platformio.ini; without it the board does not accept updates.
+constexpr uint16_t OTA_PORT = 3232;
 constexpr uint32_t WS_FLUSH_MS = 40;   // batch lines into one frame per 40 ms
 
 WebSocketsServer ws(WS_PORT);
@@ -471,6 +479,35 @@ void setWifi(const String& cmd) {
   printWifi();
 }
 
+bool otaStarted = false;
+
+void startOta() {
+#ifdef OTA_PASSWORD
+  if (otaStarted) return;
+  ArduinoOTA.setHostname(WIFI_HOSTNAME);
+  ArduinoOTA.setPort(OTA_PORT);
+  ArduinoOTA.setPassword(OTA_PASSWORD);
+  ArduinoOTA.setMdnsEnabled(false);   // our own MDNS already runs; just announce it there
+  ArduinoOTA.onStart([]() {
+    // Nothing may move while the flash is rewritten: stop, and the watchdog keeps it so
+    // (no PINGs get through while the upload runs)
+    portENTER_CRITICAL(&runMux);
+    runState = RunState::Idle;
+    portEXIT_CRITICAL(&runMux);
+    Serial.printf("OTA,0\n");
+  });
+  ArduinoOTA.onProgress([](unsigned int done, unsigned int total) {
+    static unsigned last = 101;
+    unsigned pct = total ? done * 100u / total : 0;
+    if (pct != last) Serial.printf("OTA,%u\n", pct);
+    last = pct;
+  });
+  ArduinoOTA.onError([](ota_error_t e) { Serial.printf("OTA,ERR,%u\n", (unsigned)e); });
+  ArduinoOTA.begin();
+  otaStarted = true;
+#endif
+}
+
 void serviceWifi() {
   static bool wsStarted = false;
   if (!wsStarted && !wifiSsid.isEmpty()) {
@@ -485,9 +522,12 @@ void serviceWifi() {
     if (st == WL_CONNECTED) {
       MDNS.end();
       if (MDNS.begin(WIFI_HOSTNAME)) MDNS.addService("ws", "tcp", WS_PORT);
+      startOta();
+      if (otaStarted) MDNS.enableArduino(OTA_PORT, true);
     }
     if (!wifiSsid.isEmpty()) printWifi();
   }
+  if (otaStarted) ArduinoOTA.handle();   // blocks for the whole upload once one starts
   static uint32_t lastFlush = 0;
   uint32_t now = millis();
   if (wsOut.length() && wsClients > 0 && now - lastFlush >= WS_FLUSH_MS) {   // few big frames
@@ -620,6 +660,7 @@ void setImuMode(uint8_t mode);   // IMU section, further down
 void printImuDiag();
 bool saveImuCal();
 void clearImuCal();
+void printI2cScan();   // power sensor section, further down
 
 void handleCommand(const String& cmd) {
   if (cmd == "HELLO?") {
@@ -749,6 +790,8 @@ void handleCommand(const String& cmd) {
   } else if (cmd == "IMUDIAG") {
     printImuDiag();
 
+  } else if (cmd == "I2CSCAN") {
+    printI2cScan();
   } else if (cmd.startsWith("I2CR,") || cmd.startsWith("I2CW,")) {
     // I2CR,<addr>,<reg>  /  I2CW,<addr>,<reg>,<value>   (hex) one register, for troubleshooting
     unsigned addr = 0, reg = 0, value = 0;
@@ -840,7 +883,7 @@ void handleCommand(const String& cmd) {
     float duty;
     unsigned long duration;
     if (sscanf(cmd.c_str(), "RUN,%u,%f,%lu", &motor, &duty, &duration) == 3 &&
-        motor >= 1 && motor <= LED_TARGET) {
+        motor >= 1 && motor <= MOTOR_COUNT) {
       portENTER_CRITICAL(&runMux);
       motorRun.motor = motor - 1;
       motorRun.mode = RunMode::OpenLoop;
@@ -923,6 +966,29 @@ void sendHealth() {
 bool i2cDevicePresent(uint8_t address) {
   Wire.beginTransmission(address);
   return Wire.endTransmission() == 0;
+}
+
+// I2CSCAN: an address-only probe tells "nobody there" (2) apart from a bus fault (other codes).
+// The BNO055 addresses are skipped: a bare probe drops that chip out of fusion mode.
+void printI2cScan() {
+  int sda = digitalRead(I2C_SDA_PIN);   // both idle HIGH through the pull-ups
+  int scl = digitalRead(I2C_SCL_PIN);
+  int nack = 0, other = 0;
+  String found;
+  for (uint8_t a = 0x08; a < 0x78; a++) {
+    bool imu = false;
+    for (uint8_t i : IMU_ADDRESSES) imu |= a == i;
+    if (imu) continue;
+    Wire.beginTransmission(a);
+    uint8_t e = Wire.endTransmission();
+    if (e == 0) found += String(found.length() ? " " : "") + String(a, HEX);
+    else if (e == 2) nack++;
+    else other++;
+  }
+  int acked = 0;
+  for (char c : found) acked += c == ' ';
+  if (found.length()) acked++;
+  out.printf("I2CSCAN,%d,%d,%d,%d,%d,%s\n", sda, scl, acked, nack, other, found.c_str());
 }
 
 PowerChannel* firstReadyChannel() {
@@ -1230,7 +1296,8 @@ void serviceImu() {
   imu::Vector<3> acc = bno->getVector(Adafruit_BNO055::VECTOR_ACCELEROMETER);
   uint8_t sys = 0, gyro = 0, accel = 0, mag = 0;
   bno->getCalibration(&sys, &gyro, &accel, &mag);
-  out.printf("IMU,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%u,%u,%u,%u,%u,%d,%d\n", euler.x(), euler.z(), euler.y(),
+  // The BNO055 counts pitch up as the nose goes down; send it the usual way (nose up = +)
+  out.printf("IMU,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%u,%u,%u,%u,%u,%d,%d\n", euler.x(), -euler.z(), euler.y(),
              acc.x(), acc.y(), acc.z(), sys, gyro, accel, mag, imuMode, imuCalStored ? 1 : 0,
              imuCalLoaded ? 1 : 0);
 }
@@ -1261,7 +1328,7 @@ void telemetryTask(void*) {
 // ---------- Motor output (core 1) ----------
 
 void setupMotors() {
-  ESP32Encoder::useInternalWeakPullResistors = puType::up;   // ignored on GPIO34/35
+  ESP32Encoder::useInternalWeakPullResistors = puType::up;
   for (size_t i = 0; i < MOTOR_COUNT; i++) {
     const MotorPins& p = MOTOR_PINS[i];
     pinMode(p.ena, OUTPUT);
@@ -1275,8 +1342,6 @@ void setupMotors() {
     encoders[i].setFilter(250);   // ignore glitches shorter than ~3 us
     encoders[i].clearCount();
   }
-  ledcAttach(LED_PIN, PWM_FREQ_HZ, PWM_BITS);
-  ledcWrite(LED_PIN, 0);
 }
 
 // duty in % (-100..100): + drives IN1, - drives IN2; enabled = ENA HIGH
@@ -1599,13 +1664,10 @@ void runMotors() {
   }
   if (allActive) duty = run.duties[0];
   if (driving) duty = driveDuty[0];
-  bool ledActive = running && run.motor == (int)MOTOR_COUNT;
-  float ledDuty = ledActive ? fabsf(run.duty) : 0;   // the LED has no direction
-  ledcWrite(LED_PIN, (uint32_t)(ledDuty / 100.0f * PWM_MAX + 0.5f));
 
   float shownSpeed = run.motor < (int)MOTOR_COUNT ? speedRpm[run.motor] : allActive ? speedRpm[0] : 0;
   portENTER_CRITICAL(&runMux);
-  outputDuty = !running ? 0 : ledActive ? ledDuty : duty;
+  outputDuty = !running ? 0 : duty;
   for (size_t i = 0; i < MOTOR_COUNT; i++) motorDuty[i] = applied[i];
   controlStatus = {run.mode == RunMode::OpenLoop ? 0 : pi.refRpm, shownSpeed, ffDuty, piDuty};
   portEXIT_CRITICAL(&runMux);

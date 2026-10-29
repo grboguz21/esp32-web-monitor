@@ -131,6 +131,12 @@ const LOOP_BUDGET_US = 5000;     // control tick
 let knownPorts = [];    // ports this page already has permission for
 let port = null;        // the open port
 let reader = null;
+let rxSeen = false;         // any byte received since the port was opened
+let openedAt = 0;
+let connectRetries = 0;
+let lostAtOpen = false;
+const SILENT_OPEN_MS = 2500;
+const MAX_CONNECT_RETRIES = 2;
 let readableClosed = null;
 let device = null;      // { name, version }
 let info = null;        // chip info and reset reason, from INFO
@@ -345,7 +351,8 @@ async function addPort() {
 
 // ---------- Connection ----------
 
-async function connect() {
+async function connect({ retry = false } = {}) {
+  if (!retry) connectRetries = 0;
   const selected = knownPorts[els.portSelect.value];
   if (!selected) return;
   try {
@@ -357,9 +364,28 @@ async function connect() {
   stopDemo();
   if (imuDemoTimer) stopImuDemo();
   port = selected;
+  rxSeen = false;
+  openedAt = performance.now();
   log(t('log.opened', { port: portLabel(port) }));
   render();
   readLoop();
+  // The first open after plugging the board in sometimes gets no heartbeat (or fails at once)
+  // while closing and opening again works: do that ourselves, a couple of times at most
+  setTimeout(() => {
+    // A heartbeat, not just any byte: a board stuck in its bootloader still sends some noise
+    if (port === selected && !lastBeatAt) retryConnect();
+  }, SILENT_OPEN_MS);
+}
+
+async function retryConnect() {
+  if (connectRetries >= MAX_CONNECT_RETRIES) {
+    connectRetries = 0;
+    return;
+  }
+  connectRetries++;
+  log(t('log.retrying', { n: connectRetries }));
+  if (port) await disconnect();
+  setTimeout(() => connect({ retry: true }), 800);
 }
 
 async function disconnect() {
@@ -431,6 +457,7 @@ async function readLoop() {
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
+      if (value) rxSeen = true;
       buffer += value;
       const lines = buffer.split('\n');
       buffer = lines.pop();
@@ -442,10 +469,16 @@ async function readLoop() {
     }
   } catch (err) {
     log(t('log.readError', { msg: err.message }));
+    // Lost right after opening: same cure as a silent open
+    if (!rxSeen && performance.now() - openedAt < SILENT_OPEN_MS) lostAtOpen = true;
   } finally {
     reader.releaseLock();
   }
   await closePort();
+  if (lostAtOpen) {
+    lostAtOpen = false;
+    retryConnect();
+  }
 }
 
 async function closePort() {
@@ -520,6 +553,7 @@ function handleLine(line) {
 
   if (type === 'HB' && fields.length === 1) {
     lastBeatAt = performance.now();
+    connectRetries = 0;
     uptimeMs = Number(fields[0]);
     // Dashboard may connect after the boot-time HELLO/INFO were sent
     if (!device || !info) send('HELLO?');
@@ -711,6 +745,9 @@ function handleLine(line) {
     dutyChart.push(2, d2);
     return;
   }
+
+  // Firmware update progress from the board; the build card shows it from the PC side
+  if (type === 'OTA') return;
 
   // Anything else (boot messages, debug prints) goes to the log as-is
   log(line);
@@ -1488,6 +1525,25 @@ function resetTestData() {
 
 els.testStartBtn.addEventListener('click', () => startTest());
 els.testStopBtn.addEventListener('click', stopTest);
+
+// Emergency stop: STOP stops every mode in the firmware (open loop, speed, move, drive);
+// the page-side runs are ended too so nothing sends a new command afterwards
+function emergencyStop() {
+  if (port) send('STOP');
+  else if (simTimer !== null) startSimIdle(0);
+  if (cal) cal.abort = true;
+  driveCmd = null;
+  render();
+}
+const estopBtn = document.getElementById('estopBtn');
+estopBtn.title = t('estopTitle');
+estopBtn.setAttribute('aria-label', estopBtn.title);
+estopBtn.addEventListener('click', () => {
+  emergencyStop();
+  estopBtn.classList.remove('fired');
+  void estopBtn.offsetWidth;   // restart the flash on every press
+  estopBtn.classList.add('fired');
+});
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') stopTest(); });
 // A new duty takes effect right away while running (Enter or leaving the field)
 const dutyRunning = () => simTimer !== null || (port && testState === 1 && testOutput?.motor === 4);
@@ -2443,10 +2499,11 @@ function wiringSvg(motor) {
   </svg>`;
 }
 
-// Motor wiring: ESP32 -> L298N (ENA, IN1, IN2), L298N -> motor, encoder -> ESP32, adapter -> L298N
+// Motor wiring: ESP32 -> L298N channel (enable + two inputs), L298N -> motor, encoder -> ESP32.
+// One L298N drives both motors: motor 1 on channel A, motor 2 on channel B.
 const MOTOR_WIRING = {
-  1: { ena: 'D25', in1: 'D26', in2: 'D27', a: 'D34', b: 'D35' },
-  2: { ena: 'D18', in1: 'D19', in2: 'D23', a: 'D16', b: 'D17' },
+  1: { ch: 'A', ena: 'D4', in1: 'D2', in2: 'D15', a: 'D18', b: 'D19', l: ['ENA', 'IN1', 'IN2', 'OUT1', 'OUT2'] },
+  2: { ch: 'B', ena: 'D16', in1: 'D17', in2: 'D0', a: 'D32', b: 'D33', l: ['ENB', 'IN3', 'IN4', 'OUT3', 'OUT4'] },
 };
 
 function motorWiringSvg(m) {
@@ -2456,21 +2513,21 @@ function motorWiringSvg(m) {
   const path = (cls, d) => `<path class="w-wire ${cls}" d="${d}"/>`;
   const text = (x, y, label, anchor = 'start', cls = 'w-pin') => `<text class="${cls}" x="${x}" y="${y + 4}" text-anchor="${anchor}">${label}</text>`;
   // ESP32 -> L298N control lines
-  const ctrl = [[p.ena, 'ENA', 70], [p.in1, 'IN1', 100], [p.in2, 'IN2', 130]].map(([esp, l298, y]) =>
+  const ctrl = [[p.ena, p.l[0], 70], [p.in1, p.l[1], 100], [p.in2, p.l[2], 130]].map(([esp, l298, y]) =>
     wire('w-ctrl', 150, y, 290, y) + pin(150, y) + pin(290, y) + text(140, y, esp, 'end') + text(300, y, l298)).join('');
   // Encoder -> ESP32, routed under the driver and the adapter
   const enc = [[p.a, 'A', 250, 'w-yellow'], [p.b, 'B', 280, 'w-green'], ['3V3', 'VCC', 310, 'w-blue'], ['GND', 'GND', 340, 'w-black']]
     .map(([esp, e, y, cls]) => wire(cls, 150, y, 570, y) + pin(150, y) + pin(570, y) + text(140, y, esp, 'end') + text(580, y, e)).join('');
-  return `<svg viewBox="0 0 720 360" role="img" aria-label="${t('wiringMotor', { m })}: ENA ${p.ena}, IN1 ${p.in1}, IN2 ${p.in2}, A ${p.a}, B ${p.b}">
+  return `<svg viewBox="0 0 720 360" role="img" aria-label="${t('wiringMotor', { m })}: ${p.l[0]} ${p.ena}, ${p.l[1]} ${p.in1}, ${p.l[2]} ${p.in2}, A ${p.a}, B ${p.b}">
     <rect class="w-box" x="20" y="40" width="130" height="315" rx="8"/>
     <text class="w-title" x="85" y="32" text-anchor="middle">ESP32</text>
     <rect class="w-box" x="290" y="40" width="160" height="120" rx="8"/>
-    <text class="w-title" x="370" y="32" text-anchor="middle">${t('wiringL298', { m })}</text>
+    <text class="w-title" x="370" y="32" text-anchor="middle">${t('wiringL298', { ch: p.ch })}</text>
     <rect class="w-box" x="570" y="40" width="130" height="315" rx="8"/>
     <text class="w-title" x="635" y="32" text-anchor="middle">${t('wiringMotorBox')}</text>
     ${ctrl}
-    ${wire('w-motor', 450, 85, 570, 85)}${pin(450, 85)}${pin(570, 85)}${text(440, 85, 'OUT1', 'end')}${text(580, 85, 'M+')}
-    ${wire('w-motor', 450, 115, 570, 115)}${pin(450, 115)}${pin(570, 115)}${text(440, 115, 'OUT2', 'end')}${text(580, 115, 'M−')}
+    ${wire('w-motor', 450, 85, 570, 85)}${pin(450, 85)}${pin(570, 85)}${text(440, 85, p.l[3], 'end')}${text(580, 85, 'M+')}
+    ${wire('w-motor', 450, 115, 570, 115)}${pin(450, 115)}${pin(570, 115)}${text(440, 115, p.l[4], 'end')}${text(580, 115, 'M−')}
     ${text(635, 225, t('wiringEncoder'), 'middle', 'w-note')}
     ${path('w-power', 'M335 160 V190')}${path('w-gnd', 'M405 160 V190')}
     ${pin(335, 160)}${pin(405, 160)}
@@ -2608,6 +2665,8 @@ try {
 } catch { /* storage unavailable */ }
 
 I18N.onChange(() => {
+  estopBtn.title = t('estopTitle');
+  estopBtn.setAttribute('aria-label', estopBtn.title);
   renderThemeButton();
   renderFillButton();
   currentChart.renderLegend();
@@ -2628,3 +2687,109 @@ I18N.onChange(() => {
 });
 
 render();
+
+// ---------- Firmware update ----------
+// Compile and upload run on this PC: tools/build_server.py starts PlatformIO and streams
+// its progress back, one JSON object per line.
+const BUILD_URL = 'http://127.0.0.1:8765/build';
+const FW_TARGET_STORAGE_KEY = 'esp32-dashboard-fw-target';
+const fwEls = {
+  badge: document.getElementById('fwBadge'),
+  target: document.getElementById('fwTarget'),
+  start: document.getElementById('fwStartBtn'),
+  compilePct: document.getElementById('fwCompilePct'),
+  compileBar: document.getElementById('fwCompileBar'),
+  uploadPct: document.getElementById('fwUploadPct'),
+  uploadBar: document.getElementById('fwUploadBar'),
+  status: document.getElementById('fwStatus'),
+};
+// state: null idle, 'busy', 'done', 'failed'; text is a key or a raw output line
+let fw = { state: null, compile: null, upload: null, text: 'fwIdle', raw: false };
+try { fwEls.target.value = localStorage.getItem(FW_TARGET_STORAGE_KEY) || 'ota'; } catch { /* storage unavailable */ }
+
+function renderFw() {
+  const level = { busy: 'run', done: 'ok', failed: 'bad' }[fw.state];
+  fwEls.badge.textContent = t({ busy: 'fwBusy', done: 'fwDone', failed: 'fwFailed' }[fw.state] ?? 'fwIdle');
+  if (level) fwEls.badge.dataset.level = level;
+  else delete fwEls.badge.dataset.level;
+  fwEls.start.disabled = fw.state === 'busy';
+  fwEls.target.disabled = fw.state === 'busy';
+  for (const [pct, bar, v] of [[fwEls.compilePct, fwEls.compileBar, fw.compile], [fwEls.uploadPct, fwEls.uploadBar, fw.upload]]) {
+    pct.textContent = v === null ? '—' : `${v} %`;
+    bar.style.width = `${v ?? 0}%`;
+    bar.classList.toggle('ok', fw.state === 'done');
+    bar.classList.toggle('bad', fw.state === 'failed' && v !== 100);
+  }
+  fwEls.status.textContent = fw.raw ? fw.text : t(fw.text);
+  fwEls.status.title = fwEls.status.textContent;
+}
+
+async function startFirmwareUpdate() {
+  if (fw.state === 'busy') return;
+  const target = fwEls.target.value;
+  try { localStorage.setItem(FW_TARGET_STORAGE_KEY, target); } catch { /* storage unavailable */ }
+  // After the upload the board restarts; come back the same way the page was connected
+  const reconnect = port?.ws ? 'wifi' : port ? 'usb' : null;
+  fw = { state: 'busy', compile: 0, upload: 0, text: 'fwBusy', raw: false };
+  renderFw();
+  // USB: esptool needs the serial port, and Chrome would keep reading from it
+  if (target === 'usb' && port && !port.ws) {
+    await disconnect();
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  let res;
+  try {
+    res = await fetch(BUILD_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Build': '1' },
+      body: JSON.stringify({ target }),
+    });
+  } catch {
+    fw = { state: 'failed', compile: null, upload: null, text: 'fwNoHelper', raw: false };
+    renderFw();
+    return;
+  }
+  if (!res.ok) {
+    fw = { state: 'failed', compile: null, upload: null, text: res.status === 409 ? 'fwBusyElsewhere' : 'fwFailed', raw: false };
+    renderFw();
+    return;
+  }
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = '';
+  let last = null;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += value;
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const msg = JSON.parse(line);
+        last = msg;
+        fw.compile = msg.compile;
+        fw.upload = msg.upload;
+        if (msg.line) { fw.text = msg.line; fw.raw = true; }
+      }
+      renderFw();
+    }
+  } catch { /* stream cut: judged by the last message below */ }
+  if (last?.done && last.ok) {
+    fw = { state: 'done', compile: 100, upload: 100, text: 'fwDoneText', raw: false };
+  } else {
+    fw.state = 'failed';
+    fw.text = 'fwFailedText';
+    fw.raw = false;
+    for (const l of last?.tail ?? []) log(l);
+  }
+  renderFw();
+  if (fw.state !== 'done') return;
+  if (reconnect === 'usb' && !port) setTimeout(connect, 1500);
+  // OTA: the socket drops when the board restarts; it is back on the network in a few seconds
+  if (reconnect === 'wifi') setTimeout(() => { if (!port) connectWifi(); }, 6000);
+}
+
+fwEls.start.addEventListener('click', startFirmwareUpdate);
+I18N.onChange(renderFw);
+renderFw();

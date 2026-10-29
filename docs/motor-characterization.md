@@ -11,7 +11,7 @@ hardware changes, re-run the tools below and compare against this page.
 | Driver | L298N, one per motor, channel A only |
 | Supply | 12 V adapter |
 | PWM | 1 kHz, 10-bit, on IN1 (+) / IN2 (-) with ENA held HIGH (slow decay) |
-| Pins | ENA D25, IN1 D26, IN2 D27, encoder A D34, B D35 (encoder powered from 3V3) |
+| Pins | ENA D25, IN1 D26, IN2 D27, encoder A D34, B D35 (encoder powered from 3V3). The pins have since moved (see the README wiring table); that does not change these numbers |
 | Firmware | 0.13.0 to 0.18.1 |
 
 **Volts are commanded volts: duty x 12 V.** The L298N drops roughly 2 V on top of that, so

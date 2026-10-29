@@ -347,6 +347,55 @@ select:disabled { opacity: 0.6; }
 .btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 88%, #000); }
 .btn-danger:focus-visible { outline-color: var(--danger); }
 
+/* Emergency stop in the sidebar: always enabled, so it works even while the page
+   thinks nothing runs. A small mushroom button that sinks when pressed. */
+.estop {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.estop-title { font-weight: 600; }
+.estop-hint { margin-top: 2px; color: var(--muted); font-size: var(--fs-sm); }
+.estop-btn {
+  --estop-depth: 4px;
+  flex: none;
+  width: 56px;
+  height: 56px;
+  margin: 3px 3px calc(3px + var(--estop-depth));
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #ff7a70 0%, #e8302a 40%, #b01515 100%);
+  color: #fff;
+  box-shadow:
+    inset 0 -3px 6px rgba(0, 0, 0, 0.3),
+    0 var(--estop-depth) 0 #7a0b0b,
+    0 0 0 3px #f5c400,
+    0 var(--estop-depth) 0 3px #b38f00,
+    0 calc(var(--estop-depth) + 3px) 8px rgba(0, 0, 0, 0.35);
+  transition: transform 0.06s ease-out, box-shadow 0.06s ease-out, filter 0.15s;
+}
+.btn.estop-btn:hover:not(:disabled) {
+  background: radial-gradient(circle at 35% 30%, #ff8d84 0%, #f03a33 40%, #b81a1a 100%);
+}
+.estop-btn svg { width: 20px; height: 20px; filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.4)); }
+.btn.estop-btn:active:not(:disabled) {
+  transform: translateY(var(--estop-depth));
+  filter: brightness(0.9);
+  box-shadow:
+    inset 0 3px 8px rgba(0, 0, 0, 0.45),
+    0 0 0 #7a0b0b,
+    0 0 0 3px #f5c400,
+    0 0 0 3px #b38f00,
+    0 1px 3px rgba(0, 0, 0, 0.35);
+}
+/* After a press: the collar flashes so it is clear the stop went out */
+.estop-btn.fired { animation: estop-flash 0.5s ease-out; }
+@keyframes estop-flash {
+  0% { outline: 0 solid rgba(245, 196, 0, 0.8); outline-offset: 3px; }
+  100% { outline: 12px solid rgba(245, 196, 0, 0); outline-offset: 3px; }
+}
+
 .btn-ghost { height: 30px; padding: 0 10px; background: transparent; color: var(--muted); font-weight: 500; }
 .btn-ghost:hover:not(:disabled) { background: var(--secondary-bg); color: var(--text); }
 .btn-ghost:disabled { background: transparent; opacity: 0.5; }
@@ -511,6 +560,19 @@ select:disabled { opacity: 0.6; }
 }
 .meter span.warn { background: var(--waiting); }
 
+/* Firmware update: compile and upload bars fed by tools/build_server.py */
+.fw-controls { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; margin-top: 12px; }
+.fw-controls .field { min-width: 140px; }
+.fw-bars { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+@media (max-width: 700px) { .fw-bars { grid-template-columns: 1fr; } }
+.fw-bar-head { display: flex; justify-content: space-between; margin-bottom: 6px; font-size: var(--fs-sm); color: var(--muted); }
+.fw-bar-head span:last-child { font-variant-numeric: tabular-nums; color: var(--text); }
+.meter.fw-meter { height: 10px; border-radius: 5px; }
+.meter.fw-meter span { background: var(--accent); transition: width 0.2s; }
+.meter.fw-meter span.ok { background: var(--online); }
+.meter.fw-meter span.bad { background: var(--danger); }
+.fw-status { margin-top: 12px; min-height: 1.4em; font-family: ui-monospace, monospace; font-size: var(--fs-sm); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
 /* Log */
 .log-card { display: flex; flex-direction: column; }
 
@@ -563,6 +625,23 @@ select:disabled { opacity: 0.6; }
 /* Board tab */
 .board-intro { display: flex; flex-direction: column; gap: 14px; }
 .board-intro h2 { margin-bottom: 4px; }
+
+.board-tabs { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--border); }
+.board-tab {
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  padding: 6px 12px;
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+}
+.board-tab:hover { color: var(--text); }
+.board-tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+.board-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 .filters { display: flex; flex-wrap: wrap; gap: 6px; }
 .filter {
